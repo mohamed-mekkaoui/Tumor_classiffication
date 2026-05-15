@@ -1,3 +1,7 @@
 DATA/
 approche_w/
 .vscode/
+.claude/
+*.ipynb
+*.md
+*.txt

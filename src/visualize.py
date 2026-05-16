@@ -52,9 +52,9 @@ def _save(fig, path_no_ext):
 # 1. Training curves
 # ──────────────────────────────────────────────
 
-def plot_training_curves(history_csv, output_dir):
+def plot_training_curves(history_df, output_dir):
     """Loss and accuracy curves (train vs val) per epoch."""
-    df = pd.read_csv(history_csv)
+    df = history_df
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
 
@@ -216,15 +216,17 @@ def plot_test_results(y_true, y_pred, output_dir=None,inv_label=None):
     plot_label_distribution(y_true, output_dir, title="Test Label Distribution",inv_label=inv_label)
 
 
-def plot_history(output_dir=None):
-    """Generates training curves from history.csv."""
+def plot_history(output_dir=None, history_df=None):
+    """Generates training curves from a DataFrame or a history.csv file."""
     output_dir = output_dir or config.MODELS_DIR
-    history_csv = os.path.join(output_dir, "history.csv")
-    if not os.path.exists(history_csv):
-        print(f"Warning: {history_csv} not found, skipping training curves.")
-        return
+    if history_df is None:
+        history_csv = os.path.join(output_dir, "history.csv")
+        if not os.path.exists(history_csv):
+            print(f"Warning: {history_csv} not found, skipping training curves.")
+            return
+        history_df = pd.read_csv(history_csv)
     print("\nGenerating training curves...")
-    plot_training_curves(history_csv, output_dir)
+    plot_training_curves(history_df, output_dir)
 
 
 def plot_all(output_dir=None):

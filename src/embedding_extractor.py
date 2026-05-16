@@ -9,6 +9,7 @@ Requires: patch_extractor.run() to have been executed first.
 """
 
 import os
+from contextlib import nullcontext
 
 import numpy as np
 import pandas as pd
@@ -45,7 +46,21 @@ def get_model(model_name=None):
 
     timm_name, embed_dim = config.EMBEDDING_REGISTRY[model_name]
 
-    if model_name == "uni2-h":
+    if model_name == "h-optimus":
+        # H-optimus-1 (bioptimus) — normalization spécifique, dynamic_img_size=False
+        model = timm.create_model(
+            timm_name, pretrained=True,
+            init_values=1e-5, dynamic_img_size=False, num_classes=0,
+        )
+        transform = T.Compose([
+            T.Resize((224, 224)),
+            T.ToTensor(),
+            T.Normalize(
+                mean=(0.707223, 0.578729, 0.703617),
+                std=(0.211883, 0.230117, 0.177517),
+            ),
+        ])
+    elif model_name == "uni2-h":
         # UNI2-h requires explicit architecture kwargs
         timm_kwargs = {
             'img_size': 224,
@@ -223,6 +238,13 @@ def extract_embeddings(model_name=None, batch_size=None, num_workers=None):
         pin_memory=True,
     )
 
+    # Mixed precision sur GPU (recommandé pour h-optimus, bénéfique pour tous)
+    amp_ctx = (
+        torch.autocast(device_type="cuda", dtype=torch.float16)
+        if config.DEVICE.type == "cuda"
+        else nullcontext()
+    )
+
     processed = 0
     with torch.no_grad():
         for X, idxs in tqdm(loader, desc=f"Extracting ({model_name})"):
@@ -234,7 +256,8 @@ def extract_embeddings(model_name=None, batch_size=None, num_workers=None):
             X_keep = X[mask].to(config.DEVICE, non_blocking=True)
             idx_keep = idxs[mask]
 
-            z = model(X_keep).detach().cpu().numpy().astype(np.float16)
+            with amp_ctx:
+                z = model(X_keep).detach().cpu().to(torch.float32).numpy().astype(np.float16)
             feats[idx_keep] = z
             done[idx_keep] = 1
             processed += len(idx_keep)

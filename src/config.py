@@ -62,10 +62,11 @@ EMBEDDING_NUM_WORKERS = 4  # safe now that patches are pre-extracted (no OpenSli
 
 # Model name → (timm model name, embed_dim)
 EMBEDDING_REGISTRY = {
-    "dinov2":  ("vit_base_patch14_dinov2.lvd142m", 768),
-    "vit":     ("vit_base_patch16_224", 768),
-    "uni":     ("hf-hub:MahmoodLab/uni", 1024),
-    "uni2-h":  ("hf-hub:MahmoodLab/UNI2-h", 1536),
+    "dinov2":    ("vit_base_patch14_dinov2.lvd142m",      768),
+    "vit":       ("vit_base_patch16_224",                  768),
+    "uni":       ("hf-hub:MahmoodLab/uni",                1024),
+    "uni2-h":    ("hf-hub:MahmoodLab/UNI2-h",            1536),
+    "h-optimus": ("hf-hub:bioptimus/H-optimus-1",         1536),
 }
 
 # ──────────────────────────────────────────────
@@ -91,9 +92,25 @@ LABEL_MAP = {
 NUM_CLASSES = len(LABEL_MAP)
 
 D_MODEL = 256
-NHEAD = 8
+# Si True : pas de projection, le Transformer travaille à la dim native de l'embedder
+# Si False : projection Linear(in_dim, D_MODEL) — compression vers D_MODEL
+USE_NATIVE_DIM = False
+# NHEAD = D_MODEL / 64  (règle du papier Vaswani 2017 : dim/tête ≈ 64)
+# D_MODEL=256 → 4 | D_MODEL=512 → 8 | native 1024 → 16 | native 1536 → 24
+NHEAD = 4
 NUM_LAYERS = 4
 DROPOUT = 0.1
+
+# Backbone architecture
+# "transformer" : custom nn.TransformerEncoder + sinusoidal PE + CLS token + mean pooling
+# "bert"        : HuggingFace BertModel (from scratch, no pre-trained weights) + CLS token + mean pooling
+BACKBONE = "bert"
+
+# Agrégation avant la tête de classification
+# "cls"    → CLS token uniquement  → Linear(d_model, num_classes)
+# "mean"   → mean pooling uniquement → Linear(d_model, num_classes)
+# "concat" → [CLS ; mean]          → Linear(2*d_model, num_classes)
+AGGREGATION = "concat"
 
 LEARNING_RATE = 2e-4
 WEIGHT_DECAY = 1e-4

@@ -334,7 +334,7 @@ def run(model_name=None, experiment_name=None):
     print(f"\n{'='*50}  TEST  {'='*50}")
     net.load_state_dict(torch.load(best_path, map_location=config.DEVICE, weights_only=True))
 
-    te_loss, te_y, te_pred, te_probs, te_wsi = run_epoch(
+    te_loss, te_y, te_pred, _, _ = run_epoch(
         net, test_loader, criterion, train=False
     )
     te_acc = accuracy_score(te_y, te_pred)
@@ -350,27 +350,8 @@ def run(model_name=None, experiment_name=None):
     print(classification_report(te_y, te_pred, target_names=target_names,
                                 zero_division=0))
 
-    # Save results
-    hist_df = pd.DataFrame(history)
-    hist_df.to_csv(os.path.join(exp_dir, "history.csv"), index=False)
-
-    # Save walk-level predictions
-    walk_preds = pd.DataFrame({
-        "wsi_id": te_wsi,
-        "y_true": te_y,
-        "y_pred": te_pred,
-    })
-    for c in range(te_probs.shape[1]):
-        walk_preds[f"prob_{c}"] = te_probs[:, c]
-    walk_preds.to_csv(
-        os.path.join(exp_dir, "test_predictions.csv"), index=False
-    )
-
-    print(f"\nHistory saved to {exp_dir}/history.csv")
-    print(f"Predictions saved to {exp_dir}/test_predictions.csv")
-
     # ── Plots ─────────────────────────────────────
     from visualize import plot_test_results, plot_history
-    plot_history(exp_dir)
-    plot_test_results(te_y, te_pred, exp_dir)
+    hist_df = pd.DataFrame(history)
+    plot_history(exp_dir, history_df=hist_df)
     plot_test_results(te_y, te_pred, exp_dir, inv_label=inv_label)

@@ -2,6 +2,7 @@ DATA/
 approche_w/
 .vscode/
 .claude/
+add-ons/
 *.ipynb
 *.md
 *.txt

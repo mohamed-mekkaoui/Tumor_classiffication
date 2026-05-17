@@ -46,8 +46,8 @@ def get_model(model_name=None):
 
     timm_name, embed_dim = config.EMBEDDING_REGISTRY[model_name]
 
-    if model_name == "h-optimus":
-        # H-optimus-1 (bioptimus) — normalization spécifique, dynamic_img_size=False
+    if model_name in ("h-optimus", "h-optimus-0"):
+        # H-optimus-0 et H-optimus-1 (bioptimus) — même architecture et normalisation
         model = timm.create_model(
             timm_name, pretrained=True,
             init_values=1e-5, dynamic_img_size=False, num_classes=0,

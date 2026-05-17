@@ -62,11 +62,12 @@ EMBEDDING_NUM_WORKERS = 4  # safe now that patches are pre-extracted (no OpenSli
 
 # Model name → (timm model name, embed_dim)
 EMBEDDING_REGISTRY = {
-    "dinov2":    ("vit_base_patch14_dinov2.lvd142m",      768),
-    "vit":       ("vit_base_patch16_224",                  768),
-    "uni":       ("hf-hub:MahmoodLab/uni",                1024),
-    "uni2-h":    ("hf-hub:MahmoodLab/UNI2-h",            1536),
-    "h-optimus": ("hf-hub:bioptimus/H-optimus-1",         1536),
+    "dinov2":      ("vit_base_patch14_dinov2.lvd142m",    768),
+    "vit":         ("vit_base_patch16_224",                768),
+    "uni":         ("hf-hub:MahmoodLab/uni",              1024),
+    "uni2-h":      ("hf-hub:MahmoodLab/UNI2-h",          1536),
+    "h-optimus":   ("hf-hub:bioptimus/H-optimus-1",       1536),
+    "h-optimus-0": ("hf-hub:bioptimus/H-optimus-0",       1536),
 }
 
 # ──────────────────────────────────────────────

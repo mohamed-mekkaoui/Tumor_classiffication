@@ -94,7 +94,7 @@ def compute_class_weights(rw_meta, split="train", num_classes=None):
     weights = torch.zeros(nc, dtype=torch.float32)
     total = len(sub)
     for label_id, count in counts.items():
-        weights[label_id] = total / (nc * count)
+        weights[label_id] = (total / (nc * count)) ** 0.5  # sqrt atténue les extrêmes
 
     # Classes not present in train get weight 0
     print("Class weights:", weights.tolist())
@@ -161,6 +161,7 @@ def run_epoch(model, loader, criterion, optimizer=None, train=True):
             if train:
                 optimizer.zero_grad()
                 loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.step()
 
         total_loss += loss.item() * X.size(0)
@@ -281,7 +282,7 @@ def run(model_name=None, experiment_name=None):
 
     # Training
     best_path = os.path.join(exp_dir, "best_model.pt")
-    best_val_acc = -1.0
+    best_val_f1m = -1.0   # early stopping sur F1 macro (pas acc)
     bad_epochs = 0
     history = []
 
@@ -318,12 +319,12 @@ def run(model_name=None, experiment_name=None):
             f"f1w={va_f1w:.3f}  f1m={va_f1m:.3f}  bacc={va_bacc:.3f}"
         )
 
-        # Early stopping on walk-level accuracy
-        if va_acc > best_val_acc:
-            best_val_acc = va_acc
+        # Early stopping sur F1 macro (robuste au déséquilibre de classes)
+        if va_f1m > best_val_f1m:
+            best_val_f1m = va_f1m
             torch.save(net.state_dict(), best_path)
             bad_epochs = 0
-            print(f"  -> saved best model (val walk acc={best_val_acc:.3f})")
+            print(f"  -> saved best model (val f1m={best_val_f1m:.3f})")
         else:
             bad_epochs += 1
             if bad_epochs >= config.PATIENCE:

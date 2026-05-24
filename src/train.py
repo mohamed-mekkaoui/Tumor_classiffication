@@ -250,12 +250,28 @@ def run(model_name=None, experiment_name=None):
 
     if getattr(config, "OVERFIT_TEST", False):
         n = config.OVERFIT_N_SAMPLES
-        indices = list(range(min(n, len(train_ds))))
+        meta = train_ds.meta
+        rng = np.random.default_rng(42)
+        per_class = max(1, n // num_classes)
+        indices = []
+        for lid in sorted(meta["label_id"].unique()):
+            pool = meta.index[meta["label_id"] == lid].tolist()
+            chosen = rng.choice(pool, size=min(per_class, len(pool)), replace=False)
+            indices.extend(chosen.tolist())
+        remaining = [i for i in range(len(train_ds)) if i not in set(indices)]
+        if len(indices) < n and remaining:
+            extra = rng.choice(remaining, size=min(n - len(indices), len(remaining)), replace=False)
+            indices.extend(extra.tolist())
+        indices = indices[:n]
+
         train_ds = Subset(train_ds, indices)
-        val_ds   = Subset(val_ds if len(val_ds) >= n else train_ds, indices)
+        val_ds   = train_ds
         test_ds  = train_ds
+
+        dist = meta.iloc[indices]["label"].value_counts().to_dict()
         print(f"\n{'!'*60}")
-        print(f"  OVERFIT TEST — {n} samples fixes (train=val=test)")
+        print(f"  OVERFIT TEST — {len(indices)} samples stratifies (train=val=test)")
+        print(f"  Distribution : {dist}")
         print(f"  Attendu : train_acc -> 1.0 en quelques epochs")
         print(f"  Si non : bug dans data/model/loss")
         print(f"{'!'*60}\n")

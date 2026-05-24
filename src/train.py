@@ -135,7 +135,47 @@ def _filter_and_remap(rw_meta):
 
 
 # ──────────────────────────────────────────────
-# 4. Training / evaluation epoch
+# 4. LR Scheduler factory
+# ──────────────────────────────────────────────
+
+def _build_scheduler(optimizer, epochs):
+    """Builds the LR scheduler from config.SCHEDULER.
+
+    Returns None if config.SCHEDULER is None or "none".
+    """
+    name = getattr(config, "SCHEDULER", None)
+    if not name:
+        return None
+
+    eta_min = getattr(config, "SCHEDULER_ETA_MIN", 1e-6)
+
+    if name == "cosine":
+        T_max = getattr(config, "SCHEDULER_T_MAX", None) or epochs
+        return torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=T_max, eta_min=eta_min,
+        )
+    if name == "plateau":
+        return torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode="min",
+            patience=getattr(config, "SCHEDULER_PLATEAU_PATIENCE", 3),
+            factor=getattr(config, "SCHEDULER_PLATEAU_FACTOR", 0.5),
+        )
+    if name == "cosine_restart":
+        return torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+            optimizer,
+            T_0=getattr(config, "SCHEDULER_T_0", 10),
+            T_mult=getattr(config, "SCHEDULER_T_MULT", 1),
+            eta_min=eta_min,
+        )
+    raise ValueError(
+        f"Unknown SCHEDULER={name!r}. "
+        "Choose from 'cosine', 'plateau', 'cosine_restart', or None."
+    )
+
+
+# ──────────────────────────────────────────────
+# 5. Training / evaluation epoch
 # ──────────────────────────────────────────────
 
 def run_epoch(model, loader, criterion, optimizer=None, train=True):
@@ -308,6 +348,9 @@ def run(model_name=None, experiment_name=None):
         net.parameters(), lr=config.LEARNING_RATE,
         weight_decay=config.WEIGHT_DECAY,
     )
+    scheduler = _build_scheduler(optimizer, config.EPOCHS)
+    if scheduler is not None:
+        print(f"Scheduler: {type(scheduler).__name__}")
 
     # Training
     best_path = os.path.join(exp_dir, "best_model.pt")
@@ -334,8 +377,17 @@ def run(model_name=None, experiment_name=None):
         va_f1m = f1_score(va_y, va_pred, average="macro", zero_division=0)
         va_bacc = balanced_accuracy_score(va_y, va_pred)
 
+        # Step scheduler
+        if scheduler is not None:
+            if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                scheduler.step(va_loss)
+            else:
+                scheduler.step()
+
+        current_lr = optimizer.param_groups[0]["lr"]
         history.append({
             "epoch": epoch,
+            "lr": current_lr,
             "tr_loss": tr_loss, "tr_acc": tr_acc, "tr_f1w": tr_f1w,
             "va_loss": va_loss, "va_acc": va_acc,
             "va_f1w": va_f1w, "va_f1m": va_f1m, "va_bacc": va_bacc,

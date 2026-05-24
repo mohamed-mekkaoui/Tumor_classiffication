@@ -123,6 +123,22 @@ TOPK_AGG = 4  # top-k mean for WSI-level aggregation
 USE_CLASS_WEIGHTS = True  # weight CrossEntropyLoss by inverse class frequency
 GRAD_CLIP = 1.0           # max_norm for gradient clipping (0 = disabled)
 
+# ── LR Scheduler ──────────────────────────────
+# Options: "cosine" | "plateau" | "cosine_restart" | None
+SCHEDULER = "cosine"
+
+# CosineAnnealingLR
+SCHEDULER_T_MAX  = None   # None = use EPOCHS
+SCHEDULER_ETA_MIN = 1e-6
+
+# ReduceLROnPlateau
+SCHEDULER_PLATEAU_PATIENCE = 3
+SCHEDULER_PLATEAU_FACTOR   = 0.5
+
+# CosineAnnealingWarmRestarts
+SCHEDULER_T_0    = 10
+SCHEDULER_T_MULT = 1
+
 # ──────────────────────────────────────────────
 # Overfit sanity check
 # ──────────────────────────────────────────────

@@ -28,6 +28,28 @@ import config
 
 
 # ──────────────────────────────────────────────
+# Color palette per class label
+# ──────────────────────────────────────────────
+
+LABEL_COLORS = {
+    0:  "#808080",  # background
+    1:  "#DDDDDD",  # no_Tissu
+    2:  "#AED6F1",  # no_Tumor
+    3:  "#E74C3C",  # Tumor
+    4:  "#F39C12",  # ACINAIRE
+    5:  "#27AE60",  # LÉPIDIQUE
+    6:  "#9B59B6",  # MICROPAPILLAIRE
+    7:  "#1ABC9C",  # COMPLEX_GLANDULAR
+    8:  "#D35400",  # STROMA_FIBREUX
+    9:  "#F1C40F",  # STROMA_INFLAM
+    10: "#2C3E50",  # NÉCROSE
+    11: "#E91E63",  # SOLIDE
+    12: "#00BCD4",  # CRIBRIFORME
+    13: "#8BC34A",  # PAPILLAIRE
+}
+
+
+# ──────────────────────────────────────────────
 # Helpers
 # ──────────────────────────────────────────────
 
@@ -260,3 +282,123 @@ def plot_all(output_dir=None):
         print(f"Warning: {preds_csv} not found, skipping test plots.")
 
     print(f"\nAll plots saved to {output_dir}/")
+
+
+# ──────────────────────────────────────────────
+# 6. WSI walk visualization
+# ──────────────────────────────────────────────
+
+def plot_walks_on_wsi(
+    wsi_path,
+    wsi_id,
+    split=None,
+    max_walks=300,
+    downsample=16,
+    alpha=0.7,
+    line_width=2,
+    out_path=None,
+):
+    """Traces random walks on a WSI thumbnail, one color per class.
+
+    Args:
+        wsi_path  : path to the WSI file (.svs, .tiff, …)
+        wsi_id    : WSI identifier used in walk_generator (e.g. "slide_001")
+        split     : "train" / "val" / "test" or None for all splits
+        max_walks : max walks to draw (None = all); limits visual clutter
+        downsample: approximate downscale factor for the background thumbnail
+        alpha     : opacity of drawn lines and dots
+        line_width: width of walk polylines in pixels
+        out_path  : save path (.png); None saves to config.MODELS_DIR automatically
+    """
+    import openslide
+    from matplotlib.patches import Patch
+
+    walks_dir  = config.WALKS_DIR
+    index_path = os.path.join(walks_dir, "index.csv")
+    meta_path  = os.path.join(walks_dir, "rw_meta.csv")
+    paths_path = os.path.join(walks_dir, "rw_paths.npy")
+
+    for p in (index_path, meta_path, paths_path):
+        if not os.path.exists(p):
+            raise FileNotFoundError(
+                f"Walk data not found: {p}\nRun walk_generator.run() first."
+            )
+
+    index_df  = pd.read_csv(index_path)
+    meta_df   = pd.read_csv(meta_path)
+    all_paths = np.load(paths_path, allow_pickle=True)
+
+    # Filter to the requested WSI (and optionally split)
+    meta_df = meta_df[meta_df["wsi_id"] == wsi_id].copy()
+    if split is not None:
+        meta_df = meta_df[meta_df["split"] == split].copy()
+
+    if meta_df.empty:
+        print(f"No walks found for wsi_id='{wsi_id}'"
+              + (f", split='{split}'" if split else "") + ".")
+        return
+
+    if max_walks is not None and len(meta_df) > max_walks:
+        meta_df = meta_df.sample(max_walks, random_state=42)
+
+    # Read WSI background thumbnail
+    slide      = openslide.OpenSlide(wsi_path)
+    best_level = slide.get_best_level_for_downsample(downsample)
+    actual_ds  = slide.level_downsamples[best_level]
+    thumb      = slide.read_region(
+        (0, 0), best_level, slide.level_dimensions[best_level]
+    ).convert("RGB")
+    slide.close()
+
+    inv        = _label_names()
+    half_patch = config.PATCH_SIZE // 2
+
+    fig, ax = plt.subplots(figsize=(16, 12))
+    ax.imshow(thumb, interpolation="bilinear")
+    ax.axis("off")
+
+    legend_handles = {}
+
+    for _, row in meta_df.iterrows():
+        path_id  = int(row["path_id"])
+        label_id = int(row["label_id"])
+        color    = LABEL_COLORS.get(label_id, "#FF00FF")
+        path     = all_paths[path_id]
+
+        node_rows = index_df.iloc[path]
+        xs = (node_rows["px"].values + half_patch) / actual_ds
+        ys = (node_rows["py"].values + half_patch) / actual_ds
+
+        ax.plot(xs, ys, "-", color=color, alpha=alpha, linewidth=line_width, zorder=2)
+        ax.plot(xs, ys, "o", color=color, alpha=alpha, markersize=2, zorder=3)
+
+        if label_id not in legend_handles:
+            legend_handles[label_id] = Patch(
+                facecolor=color,
+                edgecolor="white",
+                label=inv.get(label_id, str(label_id)),
+            )
+
+    if legend_handles:
+        ax.legend(
+            handles=list(legend_handles.values()),
+            loc="upper right",
+            fontsize=8,
+            framealpha=0.8,
+            title="Class",
+        )
+
+    title_parts = [f"WSI: {wsi_id}"]
+    if split:
+        title_parts.append(f"split={split}")
+    title_parts.append(f"{len(meta_df)} walks")
+    ax.set_title(" — ".join(title_parts), fontsize=12, fontweight="bold")
+
+    if out_path is None:
+        os.makedirs(config.MODELS_DIR, exist_ok=True)
+        suffix   = f"_{split}" if split else ""
+        out_path = os.path.join(config.MODELS_DIR, f"walks_{wsi_id}{suffix}.png")
+
+    fig.savefig(out_path, dpi=150, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    print(f"Saved: {out_path}")

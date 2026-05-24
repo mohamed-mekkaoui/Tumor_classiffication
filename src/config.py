@@ -121,6 +121,7 @@ BATCH_SIZE = 32
 TOPK_AGG = 4  # top-k mean for WSI-level aggregation
 
 USE_CLASS_WEIGHTS = True  # weight CrossEntropyLoss by inverse class frequency
+GRAD_CLIP = 1.0           # max_norm for gradient clipping (0 = disabled)
 
 # ──────────────────────────────────────────────
 # Overfit sanity check

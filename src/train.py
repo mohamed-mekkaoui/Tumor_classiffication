@@ -161,7 +161,8 @@ def run_epoch(model, loader, criterion, optimizer=None, train=True):
             if train:
                 optimizer.zero_grad()
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                if config.GRAD_CLIP > 0:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config.GRAD_CLIP)
                 optimizer.step()
 
         total_loss += loss.item() * X.size(0)

@@ -44,7 +44,7 @@ class STRSequenceDataset(Dataset):
     def __getitem__(self, i):
         row = self.meta.iloc[i]
         path_id = int(row["path_id"])
-        path = self.paths[path_id]
+        path = np.asarray(self.paths[path_id], dtype=np.int64)
 
         X = np.array(self.feats[path], dtype=np.float32)  # (L, D)
         y = int(row["label_id"])

@@ -19,7 +19,7 @@ from sklearn.metrics import (
     confusion_matrix,
     f1_score,
 )
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, Subset
 from tqdm import tqdm
 
 import config
@@ -247,6 +247,18 @@ def run(model_name=None, experiment_name=None):
     train_ds = STRSequenceDataset(rw_meta, all_paths, feats, "train")
     val_ds = STRSequenceDataset(rw_meta, all_paths, feats, "val")
     test_ds = STRSequenceDataset(rw_meta, all_paths, feats, "test")
+
+    if getattr(config, "OVERFIT_TEST", False):
+        n = config.OVERFIT_N_SAMPLES
+        indices = list(range(min(n, len(train_ds))))
+        train_ds = Subset(train_ds, indices)
+        val_ds   = Subset(val_ds if len(val_ds) >= n else train_ds, indices)
+        test_ds  = train_ds
+        print(f"\n{'!'*60}")
+        print(f"  OVERFIT TEST — {n} samples fixes (train=val=test)")
+        print(f"  Attendu : train_acc -> 1.0 en quelques epochs")
+        print(f"  Si non : bug dans data/model/loss")
+        print(f"{'!'*60}\n")
 
     train_loader = DataLoader(
         train_ds, batch_size=config.BATCH_SIZE, shuffle=True,

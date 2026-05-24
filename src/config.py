@@ -123,6 +123,15 @@ TOPK_AGG = 4  # top-k mean for WSI-level aggregation
 USE_CLASS_WEIGHTS = True  # weight CrossEntropyLoss by inverse class frequency
 
 # ──────────────────────────────────────────────
+# Overfit sanity check
+# ──────────────────────────────────────────────
+# Set OVERFIT_TEST=True to train on N fixed samples (same set used for val).
+# A correct model should reach ~100% train accuracy within a few epochs.
+# If it doesn't, there is a bug in data loading, model, or loss computation.
+OVERFIT_TEST = False
+OVERFIT_N_SAMPLES = 32
+
+# ──────────────────────────────────────────────
 # Auto-discover WSI / GeoJSON pairs
 # ──────────────────────────────────────────────
 

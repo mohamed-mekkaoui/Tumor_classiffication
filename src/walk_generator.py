@@ -260,6 +260,7 @@ def generate_all_walks(graphs, node_to_global, index_df, splits,
 
     all_paths = []
     meta_rows = []
+    seen = set()
 
     for wsi_id, g in graphs.items():
         split = splits[wsi_id]
@@ -286,6 +287,13 @@ def generate_all_walks(graphs, node_to_global, index_df, splits,
 
             # Convert to global indices
             global_walk = [node_to_global[(wsi_id, nid)] for nid in walk]
+
+            # Deduplicate: reject identical walks and reversed duplicates
+            canonical = min(tuple(global_walk), tuple(reversed(global_walk)))
+            if canonical in seen:
+                continue
+            seen.add(canonical)
+
             label_id = walk_label(global_walk, index_df)
 
             path_id = len(all_paths)
@@ -356,6 +364,7 @@ def generate_all_walks_by_region(graphs, node_to_global, index_df, splits,
 
     all_paths = []
     meta_rows = []
+    seen = set()
 
     for wsi_id, g in graphs.items():
         split = splits[wsi_id]
@@ -411,6 +420,12 @@ def generate_all_walks_by_region(graphs, node_to_global, index_df, splits,
 
                     global_walk = [node_to_global[(wsi_id, nid)]
                                    for nid in walk]
+
+                    # Deduplicate: reject identical walks and reversed duplicates
+                    canonical = min(tuple(global_walk), tuple(reversed(global_walk)))
+                    if canonical in seen:
+                        continue
+                    seen.add(canonical)
 
                     path_id = len(all_paths)
                     all_paths.append(global_walk)

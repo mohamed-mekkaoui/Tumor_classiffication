@@ -205,12 +205,12 @@ def extract_embeddings(model_name=None, batch_size=None, num_workers=None):
     # Load pre-extracted patches
     from patch_extractor import load_patches
     patches_memmap, patches_done = load_patches()
-    # if not patches_done.all():
-    #     undone = int((patches_done == 0).sum())
-    #     raise RuntimeError(
-    #         f"{undone} patches not yet extracted. "
-    #         f"Run patch_extractor.run() first."
-    #     )
+    if not patches_done.all():
+        undone = int((patches_done == 0).sum())
+        raise RuntimeError(
+            f"{undone} patches not yet extracted. "
+            f"Run patch_extractor.run() first."
+        )
 
     # Init or resume memmap + done mask
     if os.path.exists(done_path) and os.path.exists(feats_path):

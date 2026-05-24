@@ -269,7 +269,7 @@ def run(model_name=None, experiment_name=None):
         val_ds   = train_ds
         test_ds  = train_ds
 
-        dist = meta.iloc[indices]["label"].value_counts().to_dict()
+        dist = meta.iloc[indices]["label_id"].value_counts().to_dict()
         print(f"\n{'!'*60}")
         print(f"  OVERFIT TEST — {len(indices)} samples stratifies (train=val=test)")
         print(f"  Distribution : {dist}")

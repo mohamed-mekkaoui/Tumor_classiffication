@@ -136,7 +136,9 @@ def step_b(index_df, feats, max_per_class=2000):
 
     from sklearn.linear_model import LogisticRegression
     from sklearn.model_selection import train_test_split
-    from sklearn.metrics import accuracy_score, classification_report
+    from sklearn.metrics import (
+        accuracy_score, balanced_accuracy_score, classification_report,
+    )
     from sklearn.preprocessing import StandardScaler
 
     # Retirer les classes exclues
@@ -178,11 +180,16 @@ def step_b(index_df, feats, max_per_class=2000):
     scaler = StandardScaler().fit(Xtr)
     Xtr, Xte = scaler.transform(Xtr), scaler.transform(Xte)
 
-    clf = LogisticRegression(max_iter=2000, C=1.0, n_jobs=-1)
+    # class_weight='balanced' : neutralise le déséquilibre du probe pour
+    # mesurer la séparabilité RÉELLE des embeddings (sinon le probe collapse
+    # de lui-même vers les classes majoritaires et donne une lecture faussée).
+    clf = LogisticRegression(max_iter=2000, C=1.0, n_jobs=-1,
+                             class_weight="balanced")
     clf.fit(Xtr, ytr)
     pred = clf.predict(Xte)
 
     acc = accuracy_score(yte, pred)
+    bacc = balanced_accuracy_score(yte, pred)
     n_classes = len(np.unique(y))
     chance = 1.0 / n_classes
 
@@ -190,17 +197,20 @@ def step_b(index_df, feats, max_per_class=2000):
     names = [inv.get(c, str(c)) for c in sorted(np.unique(y))]
     print()
     print(classification_report(yte, pred, target_names=names, zero_division=0))
-    print(f"  Accuracy = {acc:.3f}   (chance ≈ {chance:.3f}, {n_classes} classes)")
+    print(f"  Accuracy          = {acc:.3f}   (chance ≈ {chance:.3f}, {n_classes} classes)")
+    print(f"  Balanced accuracy = {bacc:.3f}   (métrique clé, robuste au déséquilibre)")
     print()
-    print("  VERDICT :")
-    if acc < chance * 1.5:
-        print("  >>> ÉCHEC : les embeddings ne sont PAS séparables linéairement.")
-        print("  >>> Le problème est dans les EMBEDDINGS (zéros / désalignement / corruption).")
-        print("  >>> Ne pas toucher au modèle. Re-extraire patches + embeddings proprement.")
-    elif acc > 0.6:
-        print("  >>> SUCCÈS : les embeddings SONT discriminants.")
-        print("  >>> Le problème est dans le CHEMIN SÉQUENCE/TRANSFORMER")
-        print("  >>> (normalisation d'entrée, masking, ou redondance/fuite des walks).")
+    print("  VERDICT (basé sur balanced accuracy) :")
+    if bacc < chance * 1.5:
+        print("  >>> ÉCHEC : embeddings NON séparables même avec poids équilibrés.")
+        print("  >>> Cause = LABELS BRUITÉS (annotations mal assignées aux nœuds)")
+        print("  >>>         ou tâche intrinsèquement trop difficile.")
+        print("  >>> Vérifier tag_nodes_with_annotations (chevauchement de polygones).")
+    elif bacc > 0.45:
+        print("  >>> SUCCÈS : embeddings SÉPARABLES une fois le déséquilibre neutralisé.")
+        print("  >>> Le collapse vient de la GESTION DU DÉSÉQUILIBRE à l'entraînement.")
+        print("  >>> Les poids sqrt actuels sont trop faibles → passer à 'balanced',")
+        print("  >>>     focal loss, ou oversampling des classes minoritaires.")
     else:
         print("  >>> INTERMÉDIAIRE : signal faible. Embeddings partiellement utiles.")
         print("  >>> Vérifier normalisation + qualité des annotations.")

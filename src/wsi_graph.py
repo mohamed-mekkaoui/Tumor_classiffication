@@ -2,8 +2,28 @@ import openslide
 import numpy as np
 import networkx as nx
 import random
+import ast
 import geopandas as gpd
 from shapely.geometry import Point
+
+
+def _extract_label(classification):
+    """Extrait le nom de classe d'une valeur 'classification' GeoJSON.
+
+    Gère les formes : dict {'name': ...}, str repr d'un dict, ou NaN/None.
+    Retourne 'background' si rien d'exploitable.
+    """
+    if classification is None or isinstance(classification, float):
+        return "background"
+    if isinstance(classification, dict):
+        return classification.get('name', 'background')
+    if isinstance(classification, str):
+        try:
+            return ast.literal_eval(classification).get('name', 'background')
+        except Exception:
+            return classification
+    return "background"
+
 
 class WSIHexGraph:
     def __init__(self, wsi_path, patch_size=224, white_threshold=220, white_ratio=0.5, start_col=0, start_row=0, max_cols=None, max_rows=None):
@@ -194,48 +214,74 @@ class WSIHexGraph:
 
     def tag_nodes_with_annotations(self):
         """
-        Calculates the point-in-polygon intersection for all nodes and their centers.
-        Assigns the relevant JSON classification class to the graph node.
+        Assigns an annotation class to each graph node via point-in-polygon.
+
+        Les annotations sont EMBOÎTÉES : un gros polygone grossier ("Tumor")
+        contient des polygones de sous-types fins ("ACINAIRE", ...). Un nœud
+        tombe donc dans PLUSIEURS polygones à la fois.
+
+        Règle de résolution (priorité) :
+          1. Un sous-type FIN l'emporte TOUJOURS sur un label grossier
+             (Tumor / no_Tumor / no_Tissu / background), car le but est de
+             classifier le sous-type, pas tumor/pas-tumor.
+          2. Entre deux sous-types fins (rare, régions quasi-disjointes),
+             le plus PETIT polygone gagne (le plus spécifique).
+
+        Les labels grossiers sont ceux de ``config.EXCLUDED_LABELS``.
         """
-        
+        import config
+
         if not hasattr(self, 'gdf'):
             print("Error: No annotations loaded. Call load_annotations() first.")
             return
-            
-        print("Tagging nodes with JSON annotations...")
-        
+
+        print("Tagging nodes with JSON annotations (sous-type prioritaire sur grossier)...")
+
+        # Par défaut tous les nœuds sont 'background' (cas sans match)
+        for nid in self.graph.nodes():
+            self.graph.nodes[nid]['label'] = "background"
+
         nodes_data = []
         for nid, data in self.graph.nodes(data=True):
             nodes_data.append({
                 'node_id': nid,
                 'geometry': Point(data['cx'], data['cy'])
             })
-            
+
         nodes_gdf = gpd.GeoDataFrame(nodes_data, crs=self.gdf.crs)
-        
-        # Spatial join points with polygons
-        joined = gpd.sjoin(nodes_gdf, self.gdf, how='left', predicate='within')
-        
-        for idx, row in joined.iterrows():
-            nid = row['node_id']
-            classification = row.get('classification')
-            label = "background"
-            
-            # The properties might import as dict or string
-            if classification is not None and not isinstance(classification, float):
-                if isinstance(classification, dict):
-                    label = classification.get('name', 'background')
-                elif isinstance(classification, str):
-                    try:
-                        import ast
-                        c_dict = ast.literal_eval(classification)
-                        label = c_dict.get('name', 'background')
-                    except Exception:
-                        label = classification
-            
-            self.graph.nodes[nid]['label'] = label
-            
-        print("Finished tagging nodes.")
+
+        # Aire de chaque polygone (départage entre sous-types : plus petit = plus spécifique)
+        poly_area = self.gdf.geometry.area
+
+        # Jointure spatiale : un nœud peut matcher plusieurs polygones
+        joined = gpd.sjoin(nodes_gdf, self.gdf, how='inner', predicate='within')
+        if len(joined) == 0:
+            print("Finished tagging nodes (aucun match).")
+            return
+
+        joined = joined.copy()
+        joined['poly_area'] = poly_area.loc[joined['index_right']].values
+        joined['cls'] = joined['classification'].apply(_extract_label)
+
+        # Labels grossiers (faible priorité) → perdent face aux sous-types fins
+        coarse = set(getattr(config, 'EXCLUDED_LABELS',
+                             ['background', 'no_Tissu', 'no_Tumor', 'Tumor']))
+        joined['is_coarse'] = joined['cls'].isin(coarse)
+
+        # Statistique de chevauchement (info diagnostique)
+        multi = (joined.groupby('node_id').size() > 1).sum()
+
+        # Pour chaque nœud : trier par (sous-type d'abord, puis plus petite aire)
+        joined = joined.sort_values(['is_coarse', 'poly_area'],
+                                    ascending=[True, True])
+        winners = joined.groupby('node_id', sort=False).first()
+
+        for nid, row in winners.iterrows():
+            self.graph.nodes[nid]['label'] = row['cls']
+
+        n_bg = self.graph.number_of_nodes() - len(winners)
+        print(f"Finished tagging nodes : {len(winners)} taggés, {n_bg} background, "
+              f"{int(multi)} nœuds en chevauchement (sous-type prioritaire).")
 
     def generate_random_walk(self, start_node, min_length=30, max_length=50, constraint_label=None, sharp_turn_weight=0.0):
         """

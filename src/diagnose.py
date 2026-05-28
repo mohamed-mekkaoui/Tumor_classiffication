@@ -216,6 +216,112 @@ def step_b(index_df, feats, max_per_class=2000):
         print("  >>> Vérifier normalisation + qualité des annotations.")
 
 
+# ──────────────────────────────────────────────
+# Étape C — labeling : chevauchement & visu de contrôle
+# ──────────────────────────────────────────────
+
+def _build_tagged_graph(wsi_id=None):
+    """Construit + tagge un WSIHexGraph pour une lame (la 1ère si wsi_id=None)."""
+    from wsi_graph import WSIHexGraph
+
+    pairs = config.discover_wsi_pairs()
+    if not pairs:
+        raise FileNotFoundError(f"Aucune paire WSI/GeoJSON dans {config.DATA_DIR}")
+
+    pair = pairs[0] if wsi_id is None else next(
+        (p for p in pairs if p["wsi_id"] == wsi_id), None
+    )
+    if pair is None:
+        raise ValueError(f"wsi_id '{wsi_id}' introuvable. Dispo: "
+                         f"{[p['wsi_id'] for p in pairs]}")
+
+    print(f"Construction du graphe pour : {pair['wsi_id']}")
+    g = WSIHexGraph(
+        pair["svs"],
+        patch_size=config.PATCH_SIZE,
+        white_threshold=config.WHITE_THRESHOLD,
+        white_ratio=config.WHITE_RATIO,
+    )
+    g.build_graph()
+    g.load_annotations(pair["geojson"])
+    g.tag_nodes_with_annotations()
+    return g
+
+
+def verify_labels(wsi_id=None, downsample=16, out_path=None):
+    """Génère l'image de contrôle des labels (smallest-polygon-wins appliqué).
+
+    Superpose les centres des nœuds colorés par label + les contours des
+    annotations sur la miniature de la lame.
+    """
+    from visualize import plot_node_labels_on_wsi
+
+    g = _build_tagged_graph(wsi_id)
+    path = plot_node_labels_on_wsi(g, out_path=out_path, downsample=downsample)
+    print(f"\nVisu de contrôle générée : {path}")
+    return path
+
+
+def step_c_overlap(wsi_id=None):
+    """Quantifie le chevauchement et compare ancien (last-write-wins)
+    vs nouveau (smallest-polygon-wins) labeling sur une lame.
+    """
+    import geopandas as gpd
+    import pandas as pd
+    from shapely.geometry import Point
+    from collections import Counter
+    from wsi_graph import _extract_label
+
+    g = _build_tagged_graph(wsi_id)
+
+    nodes_data = [
+        {"node_id": nid, "geometry": Point(d["cx"], d["cy"])}
+        for nid, d in g.graph.nodes(data=True)
+    ]
+    nodes_gdf = gpd.GeoDataFrame(nodes_data, crs=g.gdf.crs)
+    poly_area = g.gdf.geometry.area
+    joined = gpd.sjoin(nodes_gdf, g.gdf, how="inner", predicate="within").copy()
+    joined["poly_area"] = poly_area.loc[joined["index_right"]].values
+    joined["cls"] = joined["classification"].apply(_extract_label)
+
+    print()
+    print("=" * 70)
+    print(f"ÉTAPE C — Chevauchement & comparaison labeling")
+    print("=" * 70)
+
+    sizes = joined.groupby("node_id").size()
+    n_total = g.graph.number_of_nodes()
+    n_multi = int((sizes > 1).sum())
+    print(f"  Nœuds total           : {n_total}")
+    print(f"  Nœuds matchés         : {len(sizes)}")
+    print(f"  Nœuds multi-polygones : {n_multi} "
+          f"({100*n_multi/max(len(sizes),1):.1f}% des matchés)")
+
+    # ANCIEN : last-write-wins (ordre de la jointure)
+    old = {}
+    for _, row in joined.iterrows():
+        old[row["node_id"]] = row["cls"]
+
+    # NOUVEAU : sous-type prioritaire sur grossier, puis plus petite aire
+    coarse = set(getattr(config, "EXCLUDED_LABELS",
+                         ["background", "no_Tissu", "no_Tumor", "Tumor"]))
+    joined["is_coarse"] = joined["cls"].isin(coarse)
+    new = (joined.sort_values(["is_coarse", "poly_area"], ascending=[True, True])
+                 .groupby("node_id", sort=False).first()["cls"].to_dict())
+
+    print(f"\n  Distribution ANCIEN (last-write) : {dict(Counter(old.values()))}")
+    print(f"  Distribution NOUVEAU (smallest)  : {dict(Counter(new.values()))}")
+
+    changed = [(old[n], new[n]) for n in old if old[n] != new[n]]
+    print(f"\n  Labels qui CHANGENT : {len(changed)} / {len(old)} "
+          f"({100*len(changed)/max(len(old),1):.1f}%)")
+    if changed:
+        top = Counter(changed).most_common(12)
+        print("  Transitions (ancien → nouveau) les plus fréquentes :")
+        for (o, nw), c in top:
+            print(f"    {o:20s} → {nw:20s} : {c}")
+
+
 def main():
     model_name = sys.argv[1] if len(sys.argv) > 1 else config.EMBEDDING_MODEL
     index_df, feats = step_a(model_name)

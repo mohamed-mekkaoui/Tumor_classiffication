@@ -402,3 +402,102 @@ def plot_walks_on_wsi(
     fig.savefig(out_path, dpi=150, bbox_inches="tight", facecolor="white")
     plt.close(fig)
     print(f"Saved: {out_path}")
+
+
+# ──────────────────────────────────────────────
+# 7. Node-label verification on WSI
+# ──────────────────────────────────────────────
+
+def plot_node_labels_on_wsi(graph_obj, out_path=None, downsample=16,
+                             dot_size=6, alpha=0.8, draw_polygons=True):
+    """Superpose les labels de nœuds + les contours des annotations sur la lame.
+
+    Outil de CONTRÔLE : permet de vérifier visuellement que chaque nœud a reçu
+    le bon label (ex. les nœuds dans une zone ACINAIRE sont bien colorés
+    ACINAIRE et non Tumor). À lancer sur un WSIHexGraph déjà construit + taggé.
+
+    Args:
+        graph_obj    : instance WSIHexGraph (après build_graph + load_annotations
+                       + tag_nodes_with_annotations)
+        out_path     : chemin .png ; None → config.MODELS_DIR/node_labels_<id>.png
+        downsample   : facteur de réduction de la miniature de fond
+        dot_size     : taille des points (nœuds)
+        alpha        : opacité des points
+        draw_polygons: tracer aussi les contours des polygones d'annotation
+    """
+    import openslide
+    from matplotlib.patches import Patch
+
+    inv = _label_names()  # {label_id: name}
+    name_to_id = config.LABEL_MAP
+
+    # Miniature de fond
+    slide = openslide.OpenSlide(graph_obj.wsi_path)
+    best_level = slide.get_best_level_for_downsample(downsample)
+    actual_ds = slide.level_downsamples[best_level]
+    thumb = slide.read_region(
+        (0, 0), best_level, slide.level_dimensions[best_level]
+    ).convert("RGB")
+    slide.close()
+
+    fig, ax = plt.subplots(figsize=(16, 12))
+    ax.imshow(thumb, interpolation="bilinear")
+    ax.axis("off")
+
+    legend_handles = {}
+
+    # 1. Contours des polygones d'annotation
+    if draw_polygons and hasattr(graph_obj, "gdf"):
+        from shapely.geometry import Polygon, MultiPolygon
+        from wsi_graph import _extract_label
+        for _, arow in graph_obj.gdf.iterrows():
+            geom = arow.geometry
+            if geom is None:
+                continue
+            cls = arow.get("classification")
+            name = _extract_label(cls)
+            lid = name_to_id.get(name, 0)
+            color = LABEL_COLORS.get(lid, "#FF00FF")
+
+            polys = geom.geoms if isinstance(geom, MultiPolygon) else [geom]
+            for poly in polys:
+                if not isinstance(poly, Polygon):
+                    continue
+                xs, ys = poly.exterior.xy
+                ax.plot(np.array(xs) / actual_ds, np.array(ys) / actual_ds,
+                        "-", color=color, linewidth=1.0, alpha=0.9, zorder=2)
+
+    # 2. Centres des nœuds colorés par label assigné
+    xs_by_label = {}
+    for nid, data in graph_obj.graph.nodes(data=True):
+        name = data.get("label", "background")
+        lid = name_to_id.get(name, 0)
+        xs_by_label.setdefault(lid, ([], []))
+        xs_by_label[lid][0].append(data["cx"] / actual_ds)
+        xs_by_label[lid][1].append(data["cy"] / actual_ds)
+
+    for lid, (xs, ys) in sorted(xs_by_label.items()):
+        color = LABEL_COLORS.get(lid, "#FF00FF")
+        ax.scatter(xs, ys, s=dot_size, c=color, alpha=alpha,
+                   edgecolors="none", zorder=3)
+        legend_handles[lid] = Patch(
+            facecolor=color, edgecolor="white",
+            label=f"{inv.get(lid, str(lid))} ({len(xs)})",
+        )
+
+    if legend_handles:
+        ax.legend(handles=[legend_handles[k] for k in sorted(legend_handles)],
+                  loc="upper right", fontsize=8, framealpha=0.85, title="Label nœud")
+
+    ax.set_title(f"Vérification labels — WSI: {graph_obj.wsi_path.split('/')[-1]}",
+                 fontsize=12, fontweight="bold")
+
+    if out_path is None:
+        os.makedirs(config.MODELS_DIR, exist_ok=True)
+        wid = os.path.splitext(os.path.basename(graph_obj.wsi_path))[0]
+        out_path = os.path.join(config.MODELS_DIR, f"node_labels_{wid}.png")
+
+    fig.savefig(out_path, dpi=150, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    print(f"Saved: {out_path}")
+    return out_path

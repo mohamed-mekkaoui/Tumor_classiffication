@@ -189,6 +189,7 @@ def extract_embeddings(model_name=None, batch_size=None, num_workers=None):
     os.makedirs(out_dir, exist_ok=True)
     feats_path = os.path.join(out_dir, "features.npy")
     done_path = os.path.join(out_dir, "done.npy")
+    meta_path = os.path.join(out_dir, "meta.json")
 
     # Load index
     index_path = os.path.join(config.WALKS_DIR, "index.csv")
@@ -201,6 +202,16 @@ def extract_embeddings(model_name=None, batch_size=None, num_workers=None):
 
     # Load model
     model, transform, embed_dim = get_model(model_name)
+
+    # ── Anti-staleness : invalider le checkpoint si le graphe a changé ──
+    if os.path.exists(done_path) and not config.checkpoint_is_valid(
+        meta_path, index_df, embed_dim=int(embed_dim)
+    ):
+        print("Checkpoint embeddings PÉRIMÉ (index.csv/embed_dim différent) "
+              "→ ré-extraction complète.")
+        for p in (feats_path, done_path):
+            if os.path.exists(p):
+                os.remove(p)
 
     # Load pre-extracted patches
     from patch_extractor import load_patches
@@ -224,6 +235,7 @@ def extract_embeddings(model_name=None, batch_size=None, num_workers=None):
         feats = np.memmap(feats_path, dtype=np.float16, mode="w+",
                           shape=(N, embed_dim))
         np.save(done_path, done)
+        config.write_checkpoint_meta(meta_path, index_df, embed_dim=int(embed_dim))
         print(f"Fresh start: {N} patches to embed")
 
     if done.all():
@@ -310,12 +322,42 @@ def load_embeddings(model_name=None):
         )
 
     done = np.load(done_path)
-    # Verify actual embed_dim from file size
+
+    # ── Garde-fou 1 : alignement taille fichier ↔ index.csv courant ──
+    # features.npy doit faire exactement N * embed_dim * 2 octets (float16).
+    # Un écart signifie que les embeddings ont été extraits contre un AUTRE
+    # index.csv (graphe modifié) → désalignement silencieux des marches.
     actual_bytes = os.path.getsize(feats_path)
-    actual_dim = actual_bytes // (N * 2)  # float16 = 2 bytes
-    if actual_dim != embed_dim:
-        print(f"Adjusting embed_dim: registry={embed_dim}, file={actual_dim}")
-        embed_dim = actual_dim
+    expected_bytes = N * embed_dim * 2
+    if actual_bytes != expected_bytes:
+        file_dim = actual_bytes / (N * 2)
+        raise RuntimeError(
+            f"Embeddings DÉSALIGNÉS pour '{model_name}'.\n"
+            f"  index.csv courant : N={N}, embed_dim attendu={embed_dim} "
+            f"→ {expected_bytes} octets attendus\n"
+            f"  features.npy      : {actual_bytes} octets "
+            f"(dim déduite ≈ {file_dim:.2f})\n"
+            f"  → features.npy ne correspond pas au index.csv courant "
+            f"(graphe modifié sans re-extraction).\n"
+            f"  → CORRECTIF : supprimer {out_dir} et output/patches/, "
+            f"puis re-extraire patches + embeddings."
+        )
+
+    # ── Garde-fou 2 : extraction complète ──
+    # load_embeddings ne doit jamais renvoyer des embeddings partiels :
+    # les lignes non extraites sont des zéros → marches non discriminantes.
+    if len(done) != N:
+        raise RuntimeError(
+            f"done.npy incohérent pour '{model_name}' : {len(done)} entrées "
+            f"mais index.csv en a {N}. Re-extraire les embeddings."
+        )
+    if not done.all():
+        missing = int((done == 0).sum())
+        raise RuntimeError(
+            f"Embeddings INCOMPLETS pour '{model_name}' : {missing}/{N} "
+            f"manquants (lignes à zéro). Relancer embedding_extractor.run() "
+            f"jusqu'à complétion avant l'entraînement."
+        )
 
     feats = np.memmap(feats_path, dtype=np.float16, mode="r",
                       shape=(N, embed_dim))

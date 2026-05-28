@@ -83,6 +83,7 @@ def extract_patches(patch_size=None, checkpoint_every=10000, num_threads=8):
     os.makedirs(out_dir, exist_ok=True)
     patches_path = os.path.join(out_dir, "patches.npy")
     done_path = os.path.join(out_dir, "done.npy")
+    meta_path = os.path.join(out_dir, "meta.json")
 
     # Load node index (created by walk_generator)
     index_path = os.path.join(config.WALKS_DIR, "index.csv")
@@ -92,6 +93,13 @@ def extract_patches(patch_size=None, checkpoint_every=10000, num_threads=8):
         )
     index_df = pd.read_csv(index_path)
     N = len(index_df)
+
+    # ── Anti-staleness : invalider le checkpoint si le graphe a changé ──
+    if os.path.exists(done_path) and not config.checkpoint_is_valid(meta_path, index_df):
+        print("Checkpoint patches PÉRIMÉ (index.csv différent) → ré-extraction complète.")
+        for p in (patches_path, done_path):
+            if os.path.exists(p):
+                os.remove(p)
 
     # Pre-extract columns as numpy arrays (avoids slow iloc in loop)
     wsi_ids = index_df["wsi_id"].values
@@ -119,6 +127,7 @@ def extract_patches(patch_size=None, checkpoint_every=10000, num_threads=8):
         patches = np.memmap(patches_path, dtype=np.uint8, mode="w+",
                             shape=shape)
         np.save(done_path, done)
+        config.write_checkpoint_meta(meta_path, index_df, patch_size=patch_size)
         print(f"Fresh start: {N} patches")
 
     if done.all():

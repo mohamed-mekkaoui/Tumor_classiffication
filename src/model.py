@@ -129,6 +129,12 @@ class STRTransformer(nn.Module):
         self.aggregation = aggregation
 
         # ── Shared layers ──────────────────────────────────────────────────
+        # LayerNorm sur les embeddings bruts : les encodeurs de fondation
+        # (DINOv2, UNI, H-Optimus) produisent des features de magnitudes très
+        # différentes. Normaliser en entrée stabilise l'entraînement et évite
+        # le collapse vers une seule classe.
+        self.input_norm = nn.LayerNorm(in_dim)
+
         # USE_NATIVE_DIM=True → Identity, travaille à in_dim (aucune compression)
         # USE_NATIVE_DIM=False → Linear(in_dim, d_model) compression vers D_MODEL
         if getattr(config, 'USE_NATIVE_DIM', False):
@@ -189,7 +195,8 @@ class STRTransformer(nn.Module):
         """
         B, L, _ = x.shape
 
-        # 1. Project to d_model  →  (B, L, d_model)
+        # 1. Normalize raw embeddings, then project to d_model  →  (B, L, d_model)
+        x = self.input_norm(x)
         x = self.proj(x)
 
         # 2. Sinusoidal positional encoding (transformer only)

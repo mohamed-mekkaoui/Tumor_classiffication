@@ -1,4 +1,7 @@
+import hashlib
+import json
 import os
+
 import torch
 
 # ──────────────────────────────────────────────
@@ -184,3 +187,48 @@ def discover_wsi_pairs():
             print(f"Warning: no matching GeoJSON for {key}.svs")
 
     return pairs
+
+
+# ──────────────────────────────────────────────
+# Checkpoint fingerprint (anti-staleness)
+# ──────────────────────────────────────────────
+# Empêche la réutilisation de patches/embeddings périmés quand le graphe
+# change : si le fingerprint du index.csv courant ne correspond pas à celui
+# enregistré à l'extraction, le checkpoint est invalidé (ré-extraction).
+
+def index_fingerprint(index_df):
+    """Empreinte déterministe du index.csv basée sur N et les positions
+    de chaque nœud (wsi_id, px, py). Insensible à l'ordre des colonnes,
+    sensible à tout changement de graphe.
+    """
+    cols = ["wsi_id", "px", "py"]
+    key = "|".join(
+        index_df[c].astype(str).str.cat(sep=",") for c in cols
+    )
+    h = hashlib.sha256(key.encode("utf-8")).hexdigest()
+    return {"n": int(len(index_df)), "sha256": h}
+
+
+def write_checkpoint_meta(meta_path, index_df, **extra):
+    """Écrit le fingerprint (+ infos extra) à côté d'un done.npy."""
+    meta = index_fingerprint(index_df)
+    meta.update(extra)
+    with open(meta_path, "w", encoding="utf-8") as f:
+        json.dump(meta, f, indent=2)
+
+
+def checkpoint_is_valid(meta_path, index_df, **extra):
+    """True si le meta enregistré correspond au index.csv courant
+    (et aux champs extra fournis, ex: embed_dim). False sinon ou si absent.
+    """
+    if not os.path.exists(meta_path):
+        return False
+    try:
+        with open(meta_path, "r", encoding="utf-8") as f:
+            saved = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return False
+
+    expected = index_fingerprint(index_df)
+    expected.update(extra)
+    return all(saved.get(k) == v for k, v in expected.items())

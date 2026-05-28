@@ -128,7 +128,15 @@ BATCH_SIZE = 32
 TOPK_AGG = 4  # top-k mean for WSI-level aggregation
 
 USE_CLASS_WEIGHTS = True  # weight CrossEntropyLoss by inverse class frequency
+WEIGHT_MODE = "sqrt"      # "sqrt" (atténué) | "balanced" (plein inverse de fréquence)
 GRAD_CLIP = 1.0           # max_norm for gradient clipping (0 = disabled)
+
+# ── Entraînement en deux phases ────────────────
+# Phase 1 : geler l'encoder, entraîner proj + input_norm + cls_head (K premiers epochs)
+# Phase 2 : dégeler l'encoder, fine-tuner tout avec LR * PHASE2_LR_FACTOR
+# 0 = désactivé (entraînement classique en une seule phase)
+FREEZE_ENCODER_EPOCHS = 0
+PHASE2_LR_FACTOR      = 0.1
 
 # ── LR Scheduler ──────────────────────────────
 # Options: "cosine" | "plateau" | "cosine_restart" | None

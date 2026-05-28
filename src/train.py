@@ -133,8 +133,10 @@ def compute_class_weights(rw_meta, split="train", num_classes=None):
 
     weights = torch.zeros(nc, dtype=torch.float32)
     total = len(sub)
+    mode = getattr(config, "WEIGHT_MODE", "sqrt")
     for label_id, count in counts.items():
-        weights[label_id] = (total / (nc * count)) ** 0.5  # sqrt atténue les extrêmes
+        raw = total / (nc * count)
+        weights[label_id] = raw if mode == "balanced" else raw ** 0.5
 
     # Classes not present in train get weight 0
     print("Class weights:", weights.tolist())
@@ -488,7 +490,29 @@ def run(model_name=None, experiment_name=None):
     bad_epochs = 0
     history = []
 
+    # ── Deux phases : geler l'encoder en Phase 1 ──────────────────────────
+    freeze_ep = getattr(config, 'FREEZE_ENCODER_EPOCHS', 0)
+    if freeze_ep > 0:
+        for param in net.encoder.parameters():
+            param.requires_grad_(False)
+        logger.info(
+            f"Phase 1 ({freeze_ep} epochs) : encoder GELÉ — "
+            f"entraîne input_norm + proj + cls_head uniquement"
+        )
+
     for epoch in range(1, config.EPOCHS + 1):
+
+        # ── Transition Phase 1 → Phase 2 ──────────────────────────────────
+        if freeze_ep > 0 and epoch == freeze_ep + 1:
+            for param in net.encoder.parameters():
+                param.requires_grad_(True)
+            factor = getattr(config, 'PHASE2_LR_FACTOR', 0.1)
+            for pg in optimizer.param_groups:
+                pg['lr'] *= factor
+            logger.info(
+                f"E{epoch:02d} Phase 2 : encoder DÉGELÉ — "
+                f"LR réduit à {optimizer.param_groups[0]['lr']:.2e}"
+            )
         print(f"\n{'='*50}  Epoch {epoch}/{config.EPOCHS}  {'='*50}")
 
         # Train

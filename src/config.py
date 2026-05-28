@@ -125,7 +125,6 @@ WEIGHT_DECAY = 1e-4
 EPOCHS = 30
 PATIENCE = 5
 BATCH_SIZE = 32
-TOPK_AGG = 4  # top-k mean for WSI-level aggregation
 
 USE_CLASS_WEIGHTS = True  # weight CrossEntropyLoss by inverse class frequency
 WEIGHT_MODE = "sqrt"      # "sqrt" (atténué) | "balanced" (plein inverse de fréquence)

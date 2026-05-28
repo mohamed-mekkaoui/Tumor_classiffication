@@ -32,12 +32,11 @@ from model import STRTransformer
 # ──────────────────────────────────────────────
 
 def setup_logger(log_dir: str, name: str = "train") -> logging.Logger:
-    """Creates a file + console logger.
+    """Creates a file-only logger (no console output).
 
-    Levels written to file : DEBUG and above  (everything)
-    Levels printed to console : INFO and above (no per-batch debug noise)
-
-    Log file: <log_dir>/train.log  (overwritten each run)
+    Everything (DEBUG and above) is written to <log_dir>/train.log
+    (overwritten each run). Rien n'est affiché dans la console pour
+    ne pas polluer la sortie du notebook.
     """
     os.makedirs(log_dir, exist_ok=True)
     log_path = os.path.join(log_dir, "train.log")
@@ -55,12 +54,8 @@ def setup_logger(log_dir: str, name: str = "train") -> logging.Logger:
     fh.setLevel(logging.DEBUG)
     fh.setFormatter(fmt)
 
-    ch = logging.StreamHandler()
-    ch.setLevel(logging.INFO)
-    ch.setFormatter(fmt)
-
     logger.addHandler(fh)
-    logger.addHandler(ch)
+    logger.propagate = False          # n'écrit pas via le root logger (console)
 
     logger.info(f"Log file: {log_path}")
     return logger
@@ -108,21 +103,7 @@ def collate_pad(batch):
 
 
 # ──────────────────────────────────────────────
-# 2. MIL WSI-level aggregation
-# ──────────────────────────────────────────────
-
-def agg_topk_mean(values, k=None):
-    """Mean of the top-k values (for WSI-level probability aggregation)."""
-    k = k or config.TOPK_AGG
-    v = np.asarray(values, dtype=np.float64)
-    if len(v) <= k:
-        return float(v.mean())
-    topk = np.partition(v, -k)[-k:]
-    return float(topk.mean())
-
-
-# ──────────────────────────────────────────────
-# 3. Class weights for imbalanced data
+# 2. Class weights for imbalanced data
 # ──────────────────────────────────────────────
 
 def compute_class_weights(rw_meta, split="train", num_classes=None):
@@ -317,42 +298,7 @@ def run_epoch(model, loader, criterion, optimizer=None, train=True,
 
 
 # ──────────────────────────────────────────────
-# 5. WSI-level aggregation
-# ──────────────────────────────────────────────
-
-def aggregate_wsi(all_y, all_probs, all_wsi, k=None):
-    """Aggregates walk-level predictions to WSI-level via top-k mean.
-
-    Returns a DataFrame with columns: wsi_id, y_true, y_pred, + prob per class.
-    """
-    k = k or config.TOPK_AGG
-    df = pd.DataFrame({
-        "wsi_id": all_wsi,
-        "y_true": all_y,
-    })
-    # Add per-class probabilities
-    for c in range(all_probs.shape[1]):
-        df[f"prob_{c}"] = all_probs[:, c]
-
-    prob_cols = [f"prob_{c}" for c in range(all_probs.shape[1])]
-
-    rows = []
-    for wsi_id, grp in df.groupby("wsi_id"):
-        # WSI true label = most common walk label
-        y_true = Counter(grp["y_true"]).most_common(1)[0][0]
-        # Aggregate probabilities per class via top-k mean
-        agg_probs = [agg_topk_mean(grp[pc].values, k=k) for pc in prob_cols]
-        y_pred = int(np.argmax(agg_probs))
-        row = {"wsi_id": wsi_id, "y_true": y_true, "y_pred": y_pred}
-        for c, p in enumerate(agg_probs):
-            row[f"prob_{c}"] = p
-        rows.append(row)
-
-    return pd.DataFrame(rows)
-
-
-# ──────────────────────────────────────────────
-# 6. Main training loop
+# 5. Main training loop
 # ──────────────────────────────────────────────
 
 def run(model_name=None, experiment_name=None):

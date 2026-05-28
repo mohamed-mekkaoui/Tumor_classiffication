@@ -108,10 +108,14 @@ DROPOUT = 0.1
 BACKBONE = "bert"
 
 # Agrégation avant la tête de classification
-# "cls"    → CLS token uniquement  → Linear(d_model, num_classes)
-# "mean"   → mean pooling uniquement → Linear(d_model, num_classes)
-# "concat" → [CLS ; mean]          → Linear(2*d_model, num_classes)
+# "cls"       → CLS token uniquement          → Linear(d_model, num_classes)
+# "mean"      → mean pooling uniforme          → Linear(d_model, num_classes)
+# "concat"    → [CLS ; mean]                  → Linear(2*d_model, num_classes)
+# "attention" → gated attention pooling (ABMIL) → Linear(d_model, num_classes)
 AGGREGATION = "concat"
+
+# Dimension cachée du MLP d'attention (utilisé si AGGREGATION="attention")
+ATTENTION_HIDDEN_DIM = 128
 
 LEARNING_RATE = 2e-4
 WEIGHT_DECAY = 1e-4

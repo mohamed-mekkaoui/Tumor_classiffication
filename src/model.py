@@ -45,6 +45,41 @@ class PositionalEncoding(nn.Module):
         return x + self.pe[:, : x.size(1)]
 
 
+class AttentionPooling(nn.Module):
+    """Gated attention pooling (ABMIL — Ilse et al., 2018).
+
+    Learns a scalar importance weight per patch position:
+        a_i = softmax( W2 · tanh(W1 · h_i) )
+        out = Σ a_i · h_i
+
+    Padding positions are masked to -inf before softmax so they
+    contribute zero weight regardless of their hidden state.
+    """
+
+    def __init__(self, d_model, hidden_dim=128):
+        super().__init__()
+        self.attn = nn.Sequential(
+            nn.Linear(d_model, hidden_dim),
+            nn.Tanh(),
+            nn.Linear(hidden_dim, 1),
+        )
+
+    def forward(self, h, valid):
+        """
+        Args:
+            h     : (B, L, d_model)  patch hidden states
+            valid : (B, L, 1)        1.0 for real positions, 0.0 for padding
+        Returns:
+            out     : (B, d_model)   weighted sum
+            weights : (B, L)         attention weights (for visualization)
+        """
+        scores = self.attn(h)                                  # (B, L, 1)
+        scores = scores.masked_fill(valid == 0, float("-inf")) # mask padding
+        weights = torch.softmax(scores, dim=1)                 # (B, L, 1)
+        out = (weights * h).sum(dim=1)                         # (B, d_model)
+        return out, weights.squeeze(-1)                        # (B, d_model), (B, L)
+
+
 class STRTransformer(nn.Module):
     """
     Spatial-Temporal Random-walk Transformer for WSI multi-class classification.
@@ -86,9 +121,10 @@ class STRTransformer(nn.Module):
         self.backbone_name = backbone
 
         aggregation = getattr(config, 'AGGREGATION', 'concat')
-        if aggregation not in ("cls", "mean", "concat"):
+        if aggregation not in ("cls", "mean", "concat", "attention"):
             raise ValueError(
-                f"config.AGGREGATION must be 'cls', 'mean', or 'concat', got '{aggregation}'"
+                f"config.AGGREGATION must be 'cls', 'mean', 'concat', or 'attention', "
+                f"got '{aggregation}'"
             )
         self.aggregation = aggregation
 
@@ -131,9 +167,14 @@ class STRTransformer(nn.Module):
             )
             self.encoder = nn.TransformerEncoder(enc_layer, num_layers=num_layers)
 
+        # ── Attention pooling (ABMIL) — uniquement si AGGREGATION="attention" ──
+        if aggregation == "attention":
+            attn_hidden = getattr(config, "ATTENTION_HIDDEN_DIM", 128)
+            self.attn_pool = AttentionPooling(d_model, hidden_dim=attn_hidden)
+
         # ── Classification head ────────────────────────────────────────────
         # head_dim dépend de AGGREGATION :
-        #   "cls" / "mean" → d_model   |   "concat" → 2 * d_model
+        #   "cls" / "mean" / "attention" → d_model   |   "concat" → 2 * d_model
         head_dim = 2 * d_model if aggregation == "concat" else d_model
         self.cls_head = nn.Linear(head_dim, num_classes)
 
@@ -203,6 +244,8 @@ class STRTransformer(nn.Module):
             out = cls_out
         elif self.aggregation == "mean":
             out = mean_out
+        elif self.aggregation == "attention":
+            out, _ = self.attn_pool(patch_h, valid)
         else:  # "concat"
             out = torch.cat([cls_out, mean_out], dim=1)
         return self.cls_head(out)

@@ -109,6 +109,8 @@ def create_node_index(graphs):
     global_idx = 0
 
     for wsi_id, g in graphs.items():
+        # Taille de lecture au niveau 0 pour cette lame (= tuile 20×, constante par WSI)
+        read_size = getattr(g, "tile_l0", config.PATCH_SIZE)
         for nid, data in g.graph.nodes(data=True):
             label_str = data.get("label", "background")
             label_id = config.LABEL_MAP.get(label_str, 0)
@@ -122,6 +124,7 @@ def create_node_index(graphs):
                 "py": data["py"],
                 "cx": data["cx"],
                 "cy": data["cy"],
+                "read_size": read_size,
                 "label": label_str,
                 "label_id": label_id,
             })

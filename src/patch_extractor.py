@@ -18,6 +18,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import numpy as np
 import pandas as pd
 import openslide
+from PIL import Image
 from tqdm import tqdm
 
 import config
@@ -53,10 +54,17 @@ def _close_slides(slides):
 # 2. Extract & save patches to memmap
 # ──────────────────────────────────────────────
 
-def _read_one_patch(slide, px, py, patch_size):
-    """Read a single patch (called from thread pool)."""
-    region = slide.read_region((px, py), 0, (patch_size, patch_size))
-    return np.array(region.convert("RGB"), dtype=np.uint8)
+def _read_one_patch(slide, px, py, read_size, out_size):
+    """Read a single patch at level 0 (read_size px) and resize to out_size.
+
+    read_size > out_size when the slide is scanned above TARGET_MPP (e.g. 40×):
+    we read a larger window at full resolution and downscale it, so the model
+    sees ~20× content (the magnification it was trained on).
+    """
+    region = slide.read_region((px, py), 0, (read_size, read_size)).convert("RGB")
+    if read_size != out_size:
+        region = region.resize((out_size, out_size), Image.LANCZOS)
+    return np.array(region, dtype=np.uint8)
 
 
 def extract_patches(patch_size=None, checkpoint_every=10000, num_threads=8):
@@ -105,9 +113,16 @@ def extract_patches(patch_size=None, checkpoint_every=10000, num_threads=8):
     wsi_ids = index_df["wsi_id"].values
     px_arr = index_df["px"].values.astype(int)
     py_arr = index_df["py"].values.astype(int)
+    # read_size = level-0 window read per node (≥ patch_size if slide > TARGET_MPP).
+    # Fallback to patch_size for legacy indexes without the column.
+    if "read_size" in index_df.columns:
+        read_size_arr = index_df["read_size"].values.astype(int)
+    else:
+        read_size_arr = np.full(N, patch_size, dtype=int)
 
     print(f"Patches to extract: {N}")
-    print(f"  Patch size  : {patch_size}x{patch_size}")
+    print(f"  Output size : {patch_size}x{patch_size}")
+    print(f"  Read sizes  : {sorted(np.unique(read_size_arr).tolist())} px @ L0 → resize {patch_size}")
     print(f"  Threads     : {num_threads}")
     print(f"  Memmap size : {N * patch_size * patch_size * 3 / 1e9:.1f} GB")
 
@@ -159,7 +174,8 @@ def extract_patches(patch_size=None, checkpoint_every=10000, num_threads=8):
             futures = {
                 pool.submit(
                     _read_one_patch, slide,
-                    int(px_arr[i]), int(py_arr[i]), patch_size
+                    int(px_arr[i]), int(py_arr[i]),
+                    int(read_size_arr[i]), patch_size
                 ): i
                 for i in indices
             }

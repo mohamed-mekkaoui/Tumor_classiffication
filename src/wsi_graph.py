@@ -6,6 +6,8 @@ import ast
 import geopandas as gpd
 from shapely.geometry import Point
 
+import config
+
 
 def _extract_label(classification):
     """Extrait le nom de classe d'une valeur 'classification' GeoJSON.
@@ -29,24 +31,40 @@ class WSIHexGraph:
     def __init__(self, wsi_path, patch_size=224, white_threshold=220, white_ratio=0.5, start_col=0, start_row=0, max_cols=None, max_rows=None):
         self.wsi_path = wsi_path
         self.slide = openslide.OpenSlide(wsi_path)
-        self.patch_size = patch_size
+        self.patch_size = patch_size      # output size (model input, stored patch)
+        self.out_size = patch_size
         self.white_threshold = white_threshold
         self.white_ratio = white_ratio
-        
+
         self.width, self.height = self.slide.dimensions
         self.start_col = start_col
         self.start_row = start_row
-        
-        total_cols = self.width // self.patch_size
-        total_rows = self.height // self.patch_size
-        
+
+        # ── Grossissement : on lit au niveau 0 une tuile `tile_l0` puis on la
+        # redimensionne à `out_size` pour atteindre TARGET_MPP (20×). Les lames
+        # 40× (mpp≈0.25) donnent scale=2 → tile_l0=448. Une lame déjà en 20×
+        # donne scale=1 → tile_l0=224 (comportement inchangé).
+        mpp_x = self.slide.properties.get(openslide.PROPERTY_NAME_MPP_X)
+        try:
+            self.mpp = float(mpp_x)
+        except (TypeError, ValueError):
+            self.mpp = config.DEFAULT_SLIDE_MPP
+        self.scale = max(1, round(config.TARGET_MPP / self.mpp))
+        # Level-0 tile size used for BOTH grid stepping and patch reading.
+        self.tile_l0 = self.patch_size * self.scale
+        print(f"Native mpp={self.mpp:.4f} → scale x{self.scale} "
+              f"(tile_l0={self.tile_l0} px @ L0 → {self.out_size} px @ {config.TARGET_MPP} mpp)")
+
+        total_cols = self.width // self.tile_l0
+        total_rows = self.height // self.tile_l0
+
         self.cols = min(total_cols - start_col, max_cols) if max_cols else total_cols - start_col
         self.rows = min(total_rows - start_row, max_rows) if max_rows else total_rows - start_row
-        
+
         # To create a hexagonal brick-wall tiling with squares,
-        # we shift odd columns down by half the patch size.
-        self.half_patch = self.patch_size // 2
-        
+        # we shift odd columns down by half the (level-0) tile size.
+        self.half_patch = self.tile_l0 // 2
+
         self.graph = nx.Graph()
         # Allows instant mapping from grid index -> graph Node id
         self.grid_nodes = {}
@@ -93,10 +111,10 @@ class WSIHexGraph:
         actual_downsample = self.slide.level_downsamples[best_level]
 
         # Only read the region of interest (our cols/rows window), not the whole slide
-        roi_x0 = self.start_col * self.patch_size
-        roi_y0 = self.start_row * self.patch_size
-        roi_w  = self.cols * self.patch_size
-        roi_h  = self.rows * self.patch_size + self.half_patch  # +half_patch for odd-col shift
+        roi_x0 = self.start_col * self.tile_l0
+        roi_y0 = self.start_row * self.tile_l0
+        roi_w  = self.cols * self.tile_l0
+        roi_h  = self.rows * self.tile_l0 + self.half_patch  # +half_patch for odd-col shift
 
         # Clamp to slide bounds
         roi_w = min(roi_w, self.width  - roi_x0)
@@ -117,25 +135,25 @@ class WSIHexGraph:
         
         for c_offset in range(self.cols):
             c = self.start_col + c_offset
-            x = c * self.patch_size
+            x = c * self.tile_l0
             for r_offset in range(self.rows):
                 r = self.start_row + r_offset
-                y = r * self.patch_size
-                
+                y = r * self.tile_l0
+
                 # Shift odd columns down
                 if c % 2 == 1:
                     y += self.half_patch
-                
+
                 # Prevent bound overflow
-                if y + self.patch_size > self.height or x + self.patch_size > self.width:
+                if y + self.tile_l0 > self.height or x + self.tile_l0 > self.width:
                     continue
-                
+
                 # Fast Check: Check corresponding region in the thumbnail mask
                 # Map patch bounding box to thumbnail coordinates (relative to ROI origin)
                 thumb_x1 = int((x - roi_x0) / actual_downsample)
                 thumb_y1 = int((y - roi_y0) / actual_downsample)
-                thumb_x2 = int((x - roi_x0 + self.patch_size) / actual_downsample)
-                thumb_y2 = int((y - roi_y0 + self.patch_size) / actual_downsample)
+                thumb_x2 = int((x - roi_x0 + self.tile_l0) / actual_downsample)
+                thumb_y2 = int((y - roi_y0 + self.tile_l0) / actual_downsample)
                 
                 # Ensure within thumb bounds
                 thumb_x2 = min(thumb_x2, thumb_width)
@@ -183,14 +201,14 @@ class WSIHexGraph:
         Converts a spatial Cartesian coordinate (x,y) to a Graph node.
         Returns the node ID if it falls into a valid patch, else None.
         """
-        c = int(x // self.patch_size)
-        
+        c = int(x // self.tile_l0)
+
         # Compute row considering the column shift
         if c % 2 == 0:
-            r = int(y // self.patch_size)
+            r = int(y // self.tile_l0)
         else:
-            r = int((y - self.half_patch) // self.patch_size)
-            
+            r = int((y - self.half_patch) // self.tile_l0)
+
         if (c, r) in self.grid_nodes:
             return self.grid_nodes[(c, r)]
         return None
@@ -200,9 +218,9 @@ class WSIHexGraph:
         Maps standard chess grid index (used by Dino raw predictions) to this staggered grid.
         This provides a quick way to pool/map standard model outputs to the valid nodes.
         """
-        cx = chess_c * self.patch_size + self.half_patch
-        cy = chess_r * self.patch_size + self.half_patch
-        
+        cx = chess_c * self.tile_l0 + self.half_patch
+        cy = chess_r * self.tile_l0 + self.half_patch
+
         return self.spatial_to_node(cx, cy)
 
     def load_annotations(self, geojson_path):

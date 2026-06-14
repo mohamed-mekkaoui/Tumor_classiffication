@@ -80,7 +80,6 @@ def get_model(model_name=None):
         model = timm.create_model(timm_name, pretrained=True, **timm_kwargs)
         transform = create_transform(**resolve_data_config(model.pretrained_cfg, model=model))
     elif model_name == "uni":
-        print("on est la")
         # UNI (v1) requires init_values for LayerScale
         model = timm.create_model(timm_name, pretrained=True,
                                   init_values=1e-5, dynamic_img_size=True,num_classes=0)

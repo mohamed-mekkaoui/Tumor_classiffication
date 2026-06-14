@@ -25,9 +25,17 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # ──────────────────────────────────────────────
 # Graph parameters
 # ──────────────────────────────────────────────
-PATCH_SIZE = 224
+PATCH_SIZE = 224          # taille de sortie / entrée modèle (memmap + transform)
 WHITE_THRESHOLD = 220
 WHITE_RATIO = 0.5
+
+# ── Grossissement / résolution ────────────────
+# Les lames sont scannées en 40× (≈ 0,25 µm/px) mais les modèles de fondation
+# (UNI, UNI2-h, H-optimus) sont entraînés en 20× (≈ 0,5 µm/px). On lit donc une
+# tuile 2× plus grande au niveau 0 (tile_l0 = PATCH_SIZE * scale) puis on la
+# redimensionne à PATCH_SIZE, avec scale = round(TARGET_MPP / mpp_natif).
+TARGET_MPP = 0.5          # µm/px visé (20×, attendu par UNI/UNI2-h/H-optimus)
+DEFAULT_SLIDE_MPP = 0.25  # fallback si la lame n'expose pas openslide.mpp-x
 
 # ──────────────────────────────────────────────
 # Random walk parameters

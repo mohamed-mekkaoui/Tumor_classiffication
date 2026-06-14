@@ -51,6 +51,15 @@ EXCLUDED_LABELS = ["background", "no_Tissu", "no_Tumor", "Tumor"]  # labels to s
 MIN_REGION_SIZE = 30           # min nodes in a connected component to generate walks
 WALK_BOUNCE = True             # True = bounce at boundaries, False = stop at boundaries
 
+# ── Génération équilibrée par classe (balance plafonnée, size-aware) ──
+# True  → vise WALKS_PER_CLASS walks PAR CLASSE, réparti sur ses régions selon leur taille,
+#         avec un plafond de redondance (MAX_WALK_REDUNDANCY). Les classes pauvres en tissu
+#         plafonnent honnêtement sous la cible.
+# False → ancien comportement (WALKS_PER_REGION walks par composante).
+BALANCE_WALKS       = True
+WALKS_PER_CLASS     = 2000     # budget de walks visé par classe non-exclue
+MAX_WALK_REDUNDANCY = 50       # nb de fois qu'un patch est réutilisé EN MOYENNE (plafond)
+
 # ──────────────────────────────────────────────
 # Split
 # ──────────────────────────────────────────────

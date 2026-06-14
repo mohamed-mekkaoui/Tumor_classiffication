@@ -459,6 +459,162 @@ def generate_all_walks_by_region(graphs, node_to_global, index_df, splits,
 
 
 # ──────────────────────────────────────────────
+# 5c. Generate class-balanced walks (size-aware, redundancy-capped)
+# ──────────────────────────────────────────────
+
+def _walks_for_component(g, wsi_id, comp_nodes, label, node_to_global, seen,
+                         n_target, min_length, max_length, sharp_turn_weight, bounce):
+    """Generate up to ``n_target`` DISTINCT global-index walks inside one component.
+
+    Uses the shared ``seen`` set for global dedup (canonical, reverse-invariant).
+    Returns a list of global walks (each a list of global indices).
+    """
+    walks = []
+    attempts = 0
+    max_attempts = max(n_target * 10, 10)
+    walk_fn = g.generate_random_walk_bounce if bounce else g.generate_random_walk
+
+    while len(walks) < n_target and attempts < max_attempts:
+        attempts += 1
+        start = random.choice(comp_nodes)
+        walk = walk_fn(
+            start,
+            min_length=min_length,
+            max_length=max_length,
+            constraint_label=label,
+            sharp_turn_weight=sharp_turn_weight,
+        )
+        if len(walk) < min_length:
+            continue
+
+        global_walk = [node_to_global[(wsi_id, nid)] for nid in walk]
+        canonical = min(tuple(global_walk), tuple(reversed(global_walk)))
+        if canonical in seen:
+            continue
+        seen.add(canonical)
+        walks.append(global_walk)
+
+    return walks
+
+
+def generate_all_walks_balanced(graphs, node_to_global, index_df, splits,
+                                walks_per_class=None, max_redundancy=None,
+                                min_length=None, max_length=None,
+                                sharp_turn_weight=None, excluded_labels=None,
+                                min_region_size=None, bounce=None):
+    """Generate walks with a per-CLASS budget instead of a per-region count.
+
+    For each non-excluded class:
+      1. gather all its connected components (>= ``min_region_size``) across all WSIs ;
+      2. cap the budget by available tissue (size-aware) so redundancy stays bounded::
+
+             total_nodes    = Σ component sizes
+             class_capacity = max_redundancy * total_nodes / L   (L = avg walk length)
+             target_eff     = min(walks_per_class, class_capacity)
+
+      3. distribute ``target_eff`` across components proportionally to their size ;
+      4. report per class: #regions, nodes, target, produced, avg redundancy.
+
+    Classes poor in tissue plateau below the target (flagged) — honest by design.
+    Returns ``(all_paths, rw_meta)`` in the same format as ``generate_all_walks_by_region``.
+    """
+    walks_per_class   = walks_per_class   or config.WALKS_PER_CLASS
+    max_redundancy    = max_redundancy    if max_redundancy is not None else config.MAX_WALK_REDUNDANCY
+    min_length        = min_length        or config.WALK_MIN_LENGTH
+    max_length        = max_length        or config.WALK_MAX_LENGTH
+    sharp_turn_weight = (sharp_turn_weight if sharp_turn_weight is not None
+                         else config.SHARP_TURN_WEIGHT)
+    excluded_labels   = excluded_labels   or config.EXCLUDED_LABELS
+    min_region_size   = min_region_size   or config.MIN_REGION_SIZE
+    if bounce is None:
+        bounce = config.WALK_BOUNCE
+
+    L = (min_length + max_length) / 2.0  # average walk length
+
+    # 1. Collect components per class across all WSIs
+    class_components = defaultdict(list)  # label -> [(wsi_id, g, comp_nodes), ...]
+    for wsi_id, g in graphs.items():
+        nodes_by_label = defaultdict(list)
+        for nid, data in g.graph.nodes(data=True):
+            nodes_by_label[data.get("label", "background")].append(nid)
+
+        for label, label_nodes in nodes_by_label.items():
+            if label in excluded_labels:
+                continue
+            subgraph = g.graph.subgraph(label_nodes)
+            for comp in nx.connected_components(subgraph):
+                comp = list(comp)
+                if len(comp) >= min_region_size:
+                    class_components[label].append((wsi_id, g, comp))
+
+    walk_method_name = "bounce" if bounce else "stop"
+    print(f"\nBalanced walk generation — target={walks_per_class}/class, "
+          f"max_redundancy={max_redundancy}x, mode={walk_method_name}")
+
+    all_paths = []
+    meta_rows = []
+    seen = set()
+    report = []
+
+    for label in sorted(class_components.keys()):
+        comps = class_components[label]
+        label_id = config.LABEL_MAP.get(label, 0)
+        total_nodes = sum(len(c) for _, _, c in comps)
+
+        # Size-aware, redundancy-capped class budget
+        class_capacity = int(max_redundancy * total_nodes / L)
+        target_eff = min(walks_per_class, class_capacity)
+
+        # Distribute proportionally to component size (largest first; shortfalls roll over)
+        comps_sorted = sorted(comps, key=lambda t: len(t[2]), reverse=True)
+        produced = 0
+        for i, (wsi_id, g, comp) in enumerate(comps_sorted):
+            remaining_target = target_eff - produced
+            remaining_nodes = sum(len(c) for _, _, c in comps_sorted[i:])
+            if remaining_target <= 0 or remaining_nodes <= 0:
+                break
+            alloc = max(1, int(round(remaining_target * len(comp) / remaining_nodes)))
+
+            walks = _walks_for_component(
+                g, wsi_id, comp, label, node_to_global, seen,
+                alloc, min_length, max_length, sharp_turn_weight, bounce,
+            )
+            for gw in walks:
+                path_id = len(all_paths)
+                all_paths.append(gw)
+                meta_rows.append({
+                    "path_id": path_id,
+                    "wsi_id": wsi_id,
+                    "split": splits[wsi_id],
+                    "path_len": len(gw),
+                    "label_id": label_id,
+                    "label": label,
+                })
+            produced += len(walks)
+
+        redund = (produced * L / total_nodes) if total_nodes else 0.0
+        capped = produced < walks_per_class
+        report.append((label, len(comps), total_nodes, walks_per_class, produced, redund, capped))
+
+    rw_meta = pd.DataFrame(meta_rows)
+
+    # ── Reporting (jury artifact) ──
+    print(f"\n{'classe':20s} {'régions':>8s} {'nœuds':>8s} {'cible':>7s} "
+          f"{'obtenu':>7s} {'redond':>8s}")
+    print("-" * 64)
+    for label, nreg, nnodes, target, prod, redund, capped in report:
+        flag = "  ← plafonné (tissu)" if capped else ""
+        print(f"{label:20s} {nreg:8d} {nnodes:8d} {target:7d} "
+              f"{prod:7d} {redund:7.1f}x{flag}")
+
+    print(f"\nTotal walks: {len(all_paths)}")
+    if len(rw_meta) > 0:
+        print(rw_meta.groupby("split")["path_id"].count().to_string())
+
+    return all_paths, rw_meta
+
+
+# ──────────────────────────────────────────────
 # 6. Save to disk
 # ──────────────────────────────────────────────
 
@@ -514,10 +670,16 @@ def run(walks_per_region=None):
     graphs = filter_no_tissu(graphs)
     index_df, node_to_global = create_node_index(graphs)
     splits = assign_splits(list(graphs.keys()), seed=config.SPLIT_SEED)
-    all_paths, rw_meta = generate_all_walks_by_region(
-        graphs, node_to_global, index_df, splits,
-        walks_per_region=walks_per_region,
-    )
+
+    if getattr(config, "BALANCE_WALKS", False):
+        all_paths, rw_meta = generate_all_walks_balanced(
+            graphs, node_to_global, index_df, splits,
+        )
+    else:
+        all_paths, rw_meta = generate_all_walks_by_region(
+            graphs, node_to_global, index_df, splits,
+            walks_per_region=walks_per_region,
+        )
 
     # Apply stratified walk-level split if enabled
     if getattr(config, "STRATIFIED_SPLIT", False):

@@ -57,8 +57,13 @@ WALK_BOUNCE = True             # True = bounce at boundaries, False = stop at bo
 #         plafonnent honnêtement sous la cible.
 # False → ancien comportement (WALKS_PER_REGION walks par composante).
 BALANCE_WALKS       = True
-WALKS_PER_CLASS     = 2000     # budget de walks visé par classe non-exclue
-MAX_WALK_REDUNDANCY = 50       # nb de fois qu'un patch est réutilisé EN MOYENNE (plafond)
+# None = pas de plafond absolu, la capacité physique + MAX_CLASS_IMBALANCE_RATIO contrôlent.
+# Mettre un entier pour forcer un plafond absolu en plus du ratio.
+WALKS_PER_CLASS          = None
+MAX_WALK_REDUNDANCY      = 50   # un patch peut être revisité MAX_WALK_REDUNDANCY fois en moyenne
+# Ratio max entre la classe la plus abondante et la plus pauvre en walks.
+# None = pas de contrôle d'imbalance (chaque classe utilise toute sa capacité physique).
+MAX_CLASS_IMBALANCE_RATIO = 10
 
 # ──────────────────────────────────────────────
 # Split

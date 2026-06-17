@@ -569,27 +569,30 @@ def _walks_for_component(g, wsi_id, comp_nodes, label, node_to_global, seen,
 
 def generate_all_walks_balanced(graphs, node_to_global, index_df, splits,
                                 walks_per_class=None, max_redundancy=None,
+                                max_imbalance_ratio=None,
                                 min_length=None, max_length=None,
                                 sharp_turn_weight=None, excluded_labels=None,
                                 min_region_size=None, bounce=None):
-    """Generate walks with a per-CLASS budget instead of a per-region count.
+    """Generate walks with a per-CLASS budget, controlled by redundancy and imbalance ratio.
 
     For each non-excluded class:
-      1. gather all its connected components (>= ``min_region_size``) across all WSIs ;
-      2. cap the budget by available tissue (size-aware) so redundancy stays bounded::
+      1. gather all connected components (>= ``min_region_size``) across all WSIs ;
+      2. compute physical capacity:
+             class_capacity = max_redundancy * total_nodes / L
+      3. cap by imbalance ratio (limits max/min walks ratio across classes):
+             imbalance_cap  = max_imbalance_ratio * min(all class capacities)
+      4. optionally cap by absolute walks_per_class (if not None) ;
+      5. distribute across components proportionally to size.
 
-             total_nodes    = Σ component sizes
-             class_capacity = max_redundancy * total_nodes / L   (L = avg walk length)
-             target_eff     = min(walks_per_class, class_capacity)
-
-      3. distribute ``target_eff`` across components proportionally to their size ;
-      4. report per class: #regions, nodes, target, produced, avg redundancy.
-
-    Classes poor in tissue plateau below the target (flagged) — honest by design.
-    Returns ``(all_paths, rw_meta)`` in the same format as ``generate_all_walks_by_region``.
+    This ensures rare classes (ACINAIRE) use their full tissue capacity while
+    abundant classes (LÉPIDIQUE) are capped to keep the dataset balanced.
     """
-    walks_per_class   = walks_per_class   or config.WALKS_PER_CLASS
-    max_redundancy    = max_redundancy    if max_redundancy is not None else config.MAX_WALK_REDUNDANCY
+    if walks_per_class is None:
+        walks_per_class = getattr(config, "WALKS_PER_CLASS", None)
+    if max_redundancy is None:
+        max_redundancy = config.MAX_WALK_REDUNDANCY
+    if max_imbalance_ratio is None:
+        max_imbalance_ratio = getattr(config, "MAX_CLASS_IMBALANCE_RATIO", None)
     min_length        = min_length        or config.WALK_MIN_LENGTH
     max_length        = max_length        or config.WALK_MAX_LENGTH
     sharp_turn_weight = (sharp_turn_weight if sharp_turn_weight is not None
@@ -599,10 +602,10 @@ def generate_all_walks_balanced(graphs, node_to_global, index_df, splits,
     if bounce is None:
         bounce = config.WALK_BOUNCE
 
-    L = (min_length + max_length) / 2.0  # average walk length
+    L = (min_length + max_length) / 2.0
 
     # 1. Collect components per class across all WSIs
-    class_components = defaultdict(list)  # label -> [(wsi_id, g, comp_nodes), ...]
+    class_components = defaultdict(list)
     for wsi_id, g in graphs.items():
         nodes_by_label = defaultdict(list)
         for nid, data in g.graph.nodes(data=True):
@@ -617,9 +620,32 @@ def generate_all_walks_balanced(graphs, node_to_global, index_df, splits,
                 if len(comp) >= min_region_size:
                     class_components[label].append((wsi_id, g, comp))
 
+    # 2. Compute physical capacity per class
+    class_capacities = {
+        label: int(max_redundancy * sum(len(c) for _, _, c in comps) / L)
+        for label, comps in class_components.items()
+    }
+
+    # 3. Imbalance cap: cap rich classes so max/min ≤ max_imbalance_ratio
+    if max_imbalance_ratio is not None and class_capacities:
+        min_cap = min(class_capacities.values())
+        imbalance_ceiling = int(max_imbalance_ratio * min_cap)
+    else:
+        imbalance_ceiling = None
+
+    def _target(label):
+        caps = [class_capacities[label]]
+        if imbalance_ceiling is not None:
+            caps.append(imbalance_ceiling)
+        if walks_per_class is not None:
+            caps.append(walks_per_class)
+        return min(caps)
+
     walk_method_name = "bounce" if bounce else "stop"
-    print(f"\nBalanced walk generation — target={walks_per_class}/class, "
-          f"max_redundancy={max_redundancy}x, mode={walk_method_name}")
+    print(f"\nBalanced walk generation — max_redundancy={max_redundancy}x, "
+          f"max_imbalance_ratio={max_imbalance_ratio}x, mode={walk_method_name}")
+    if imbalance_ceiling is not None:
+        print(f"  min_capacity={min_cap}  →  imbalance_ceiling={imbalance_ceiling}")
 
     all_paths = []
     meta_rows = []
@@ -630,10 +656,18 @@ def generate_all_walks_balanced(graphs, node_to_global, index_df, splits,
         comps = class_components[label]
         label_id = config.LABEL_MAP.get(label, 0)
         total_nodes = sum(len(c) for _, _, c in comps)
+        phys_cap    = class_capacities[label]
+        target_eff  = _target(label)
 
-        # Size-aware, redundancy-capped class budget
-        class_capacity = int(max_redundancy * total_nodes / L)
-        target_eff = min(walks_per_class, class_capacity)
+        # Determine cap reason for reporting
+        if target_eff == phys_cap:
+            cap_reason = "tissu"
+        elif imbalance_ceiling is not None and target_eff == imbalance_ceiling:
+            cap_reason = "ratio"
+        elif walks_per_class is not None and target_eff == walks_per_class:
+            cap_reason = "absolu"
+        else:
+            cap_reason = ""
 
         # Distribute proportionally to component size (largest first; shortfalls roll over)
         comps_sorted = sorted(comps, key=lambda t: len(t[2]), reverse=True)
@@ -665,19 +699,20 @@ def generate_all_walks_balanced(graphs, node_to_global, index_df, splits,
             produced += len(walks)
 
         redund = (produced * L / total_nodes) if total_nodes else 0.0
-        capped = produced < walks_per_class
-        report.append((label, len(comps), total_nodes, walks_per_class, produced, redund, capped))
+        capped = produced < phys_cap
+        report.append((label, len(comps), total_nodes, phys_cap, target_eff,
+                        produced, redund, cap_reason if capped else ""))
 
     rw_meta = pd.DataFrame(meta_rows)
 
-    # ── Reporting (jury artifact) ──
-    print(f"\n{'classe':20s} {'régions':>8s} {'nœuds':>8s} {'cible':>7s} "
-          f"{'obtenu':>7s} {'redond':>8s}")
-    print("-" * 64)
-    for label, nreg, nnodes, target, prod, redund, capped in report:
-        flag = "  ← plafonné (tissu)" if capped else ""
-        print(f"{label:20s} {nreg:8d} {nnodes:8d} {target:7d} "
-              f"{prod:7d} {redund:7.1f}x{flag}")
+    # ── Reporting ──
+    print(f"\n{'classe':20s} {'régions':>8s} {'nœuds':>8s} {'capacité':>9s} "
+          f"{'cible':>7s} {'obtenu':>7s} {'redond':>8s}")
+    print("-" * 76)
+    for label, nreg, nnodes, phys, target, prod, redund, flag in report:
+        flag_str = f"  ← plafonné ({flag})" if flag else ""
+        print(f"{label:20s} {nreg:8d} {nnodes:8d} {phys:9d} "
+              f"{target:7d} {prod:7d} {redund:7.1f}x{flag_str}")
 
     print(f"\nTotal walks: {len(all_paths)}")
     if len(rw_meta) > 0:

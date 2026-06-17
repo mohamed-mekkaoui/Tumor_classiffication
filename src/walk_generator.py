@@ -232,6 +232,74 @@ def assign_stratified_walk_splits(rw_meta, seed=None,
     return rw_meta
 
 
+def assign_region_holdout_split(rw_meta, regions_per_class=1, seed=42,
+                                train_ratio=None, val_ratio=None):
+    """Hold out N whole regions per class as test set; stratified train/val on the rest.
+
+    regions_per_class : int (global) OR dict {"default": 1, "ACINAIRE": 5, ...}
+        Classes absent from the dict use the "default" value.
+        Selection criterion: the N largest regions (most walks) per class.
+
+    Requires rw_meta to have 'label' (str) and 'region_key' columns, which are
+    produced by generate_all_walks_by_region() and generate_all_walks_balanced().
+    """
+    from sklearn.model_selection import train_test_split as _tts
+
+    train_ratio = train_ratio if train_ratio is not None else config.TRAIN_RATIO
+    val_ratio   = val_ratio   if val_ratio   is not None else config.VAL_RATIO
+
+    if "region_key" not in rw_meta.columns:
+        raise ValueError(
+            "rw_meta has no 'region_key' column. "
+            "Re-generate walks with the updated walk_generator."
+        )
+
+    def _n(label_name):
+        if isinstance(regions_per_class, int):
+            return regions_per_class
+        return regions_per_class.get(label_name,
+               regions_per_class.get("default", 1))
+
+    rw_meta = rw_meta.copy()
+    rw_meta["split"] = "train"
+
+    # 1. Select test regions: N largest per class
+    test_keys = set()
+    print("\nRegion-holdout — test region selection:")
+    for label_name in sorted(rw_meta["label"].unique()):
+        sub = rw_meta[rw_meta["label"] == label_name]
+        sizes = sub.groupby("region_key").size().sort_values(ascending=False)
+        n = _n(label_name)
+        selected = sizes.head(n).index.tolist()
+        test_keys.update(selected)
+        print(f"  {label_name:20s}: {n} region(s), "
+              f"{sizes[selected].sum()} test walks  {selected}")
+
+    # 2. Mark test walks
+    test_mask = rw_meta["region_key"].isin(test_keys)
+    rw_meta.loc[test_mask, "split"] = "test"
+
+    # 3. Stratified train/val on the remaining walks
+    remaining = rw_meta[~test_mask]
+    adj_val = val_ratio / (train_ratio + val_ratio)
+    train_idx, val_idx = _tts(
+        remaining.index,
+        test_size=adj_val,
+        stratify=remaining["label_id"],
+        random_state=seed,
+    )
+    rw_meta.loc[train_idx, "split"] = "train"
+    rw_meta.loc[val_idx,   "split"] = "val"
+
+    print(f"\nSplit summary (region holdout, seed={seed}):")
+    for s in ["train", "val", "test"]:
+        sub = rw_meta[rw_meta["split"] == s]
+        classes = sorted(sub["label_id"].unique())
+        print(f"  {s:5s}: {len(sub):6d} walks  classes={classes}")
+
+    return rw_meta
+
+
 # ──────────────────────────────────────────────
 # 4. Walk-level label via majority vote
 # ──────────────────────────────────────────────
@@ -439,6 +507,8 @@ def generate_all_walks_by_region(graphs, node_to_global, index_df, splits,
                         "path_len": len(global_walk),
                         "label_id": label_id,
                         "label": label,
+                        "component_id": comp_idx,
+                        "region_key": f"{wsi_id}__{label}__{comp_idx}",
                     })
                     accepted += 1
 
@@ -589,6 +659,8 @@ def generate_all_walks_balanced(graphs, node_to_global, index_df, splits,
                     "path_len": len(gw),
                     "label_id": label_id,
                     "label": label,
+                    "component_id": i,
+                    "region_key": f"{wsi_id}__{label}__{i}",
                 })
             produced += len(walks)
 
@@ -681,8 +753,16 @@ def run(walks_per_region=None):
             walks_per_region=walks_per_region,
         )
 
-    # Apply stratified walk-level split if enabled
-    if getattr(config, "STRATIFIED_SPLIT", False):
+    # Apply split strategy (region holdout > stratified walk-level > WSI-level)
+    if getattr(config, "REGION_HOLDOUT_SPLIT", False):
+        rw_meta = assign_region_holdout_split(
+            rw_meta,
+            regions_per_class=getattr(config, "TEST_REGIONS_PER_CLASS", 1),
+            seed=getattr(config, "TEST_REGION_SEED", config.SPLIT_SEED),
+            train_ratio=config.TRAIN_RATIO,
+            val_ratio=config.VAL_RATIO,
+        )
+    elif getattr(config, "STRATIFIED_SPLIT", False):
         rw_meta = assign_stratified_walk_splits(rw_meta, seed=config.SPLIT_SEED)
 
     save_walks(all_paths, rw_meta, index_df)

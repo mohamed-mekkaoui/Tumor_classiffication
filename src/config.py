@@ -72,6 +72,20 @@ TRAIN_RATIO = 0.70
 VAL_RATIO   = 0.15
 # TEST_RATIO = 1 - TRAIN_RATIO - VAL_RATIO
 
+# Region-level holdout split (remplace STRATIFIED_SPLIT si True)
+# Hold out N régions entières par classe comme test set → élimine le data leakage.
+REGION_HOLDOUT_SPLIT = False
+TEST_REGION_SEED     = 42
+# int global OU dict par classe ; clé "default" = fallback pour les classes non listées.
+# ACINAIRE/MICROPAPILLAIRE/CRIBRIFORME ont de petites régions → en prendre plusieurs.
+TEST_REGIONS_PER_CLASS = {
+    "default":           1,
+    "ACINAIRE":          5,
+    "MICROPAPILLAIRE":   2,
+    "CRIBRIFORME":       2,
+    "COMPLEX_GLANDULAR": 2,
+}
+
 # ──────────────────────────────────────────────
 # Embedding model
 # ──────────────────────────────────────────────

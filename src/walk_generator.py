@@ -260,17 +260,21 @@ def assign_region_holdout_split(rw_meta, regions_per_class=1, seed=42,
         return regions_per_class.get(label_name,
                regions_per_class.get("default", 1))
 
+    import numpy as _np
+
     rw_meta = rw_meta.copy()
     rw_meta["split"] = "train"
 
-    # 1. Select test regions: N largest per class
+    # 1. Select test regions: N random per class (seed-controlled, reproducible)
+    rng = _np.random.default_rng(seed)
     test_keys = set()
     print("\nRegion-holdout — test region selection:")
     for label_name in sorted(rw_meta["label"].unique()):
         sub = rw_meta[rw_meta["label"] == label_name]
-        sizes = sub.groupby("region_key").size().sort_values(ascending=False)
-        n = _n(label_name)
-        selected = sizes.head(n).index.tolist()
+        all_regions = sub["region_key"].unique()
+        n = min(_n(label_name), len(all_regions))
+        selected = rng.choice(all_regions, size=n, replace=False).tolist()
+        sizes = sub.groupby("region_key").size()
         test_keys.update(selected)
         print(f"  {label_name:20s}: {n} region(s), "
               f"{sizes[selected].sum()} test walks  {selected}")
@@ -279,17 +283,26 @@ def assign_region_holdout_split(rw_meta, regions_per_class=1, seed=42,
     test_mask = rw_meta["region_key"].isin(test_keys)
     rw_meta.loc[test_mask, "split"] = "test"
 
-    # 3. Stratified train/val on the remaining walks
+    # 3. Region-level train/val split on the remaining regions
     remaining = rw_meta[~test_mask]
+    region_labels = (
+        remaining.groupby("region_key")["label_id"]
+        .agg(lambda x: x.mode()[0])
+        .reset_index()
+    )
     adj_val = val_ratio / (train_ratio + val_ratio)
-    train_idx, val_idx = _tts(
-        remaining.index,
+    # Stratify by label if all classes have >= 2 regions, else plain random split
+    strat = region_labels["label_id"]
+    if strat.value_counts().min() < 2:
+        strat = None
+    train_rk, val_rk = _tts(
+        region_labels["region_key"],
         test_size=adj_val,
-        stratify=remaining["label_id"],
+        stratify=strat,
         random_state=seed,
     )
-    rw_meta.loc[train_idx, "split"] = "train"
-    rw_meta.loc[val_idx,   "split"] = "val"
+    rw_meta.loc[rw_meta["region_key"].isin(set(train_rk)), "split"] = "train"
+    rw_meta.loc[rw_meta["region_key"].isin(set(val_rk)),   "split"] = "val"
 
     print(f"\nSplit summary (region holdout, seed={seed}):")
     for s in ["train", "val", "test"]:

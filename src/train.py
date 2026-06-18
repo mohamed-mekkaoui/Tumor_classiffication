@@ -68,20 +68,25 @@ def setup_logger(log_dir: str, name: str = "train") -> logging.Logger:
 class STRSequenceDataset(Dataset):
     """One item = one random-walk sequence of embeddings + its label."""
 
-    def __init__(self, rw_meta, rw_paths, feats, split):
+    def __init__(self, rw_meta, rw_paths, feats, split, augment_reverse=False):
         self.meta = rw_meta[rw_meta["split"] == split].reset_index(drop=True)
         self.paths = rw_paths
         self.feats = feats
+        self.augment_reverse = augment_reverse and (split == "train")
+        self.n_base = len(self.meta)
 
     def __len__(self):
-        return len(self.meta)
+        return self.n_base * 2 if self.augment_reverse else self.n_base
 
     def __getitem__(self, i):
-        row = self.meta.iloc[i]
+        reverse = self.augment_reverse and (i >= self.n_base)
+        row = self.meta.iloc[i % self.n_base]
         path_id = int(row["path_id"])
         path = np.asarray(self.paths[path_id], dtype=np.int64)
 
         X = np.array(self.feats[path], dtype=np.float32)  # (L, D)
+        if reverse:
+            X = X[::-1].copy()
         y = int(row["label_id"])
         wsi_id = row["wsi_id"]
         return torch.from_numpy(X), torch.tensor(y, dtype=torch.long), wsi_id
@@ -360,7 +365,9 @@ def run(model_name=None, experiment_name=None):
         )
 
     # Datasets & loaders
-    train_ds = STRSequenceDataset(rw_meta, all_paths, feats, "train")
+    augment_reverse = getattr(config, "AUGMENT_REVERSE", False)
+    train_ds = STRSequenceDataset(rw_meta, all_paths, feats, "train",
+                                  augment_reverse=augment_reverse)
     val_ds = STRSequenceDataset(rw_meta, all_paths, feats, "val")
     test_ds = STRSequenceDataset(rw_meta, all_paths, feats, "test")
 

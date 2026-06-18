@@ -776,7 +776,12 @@ def run(walks_per_region=None):
     graphs = build_all_graphs(pairs)
     graphs = filter_no_tissu(graphs)
     index_df, node_to_global = create_node_index(graphs)
-    splits = assign_splits(list(graphs.keys()), seed=config.SPLIT_SEED)
+    if getattr(config, "REGION_HOLDOUT_SPLIT", False):
+        # Neutral initial split — assign_region_holdout_split() will do the real split
+        splits = {wsi_id: "train" for wsi_id in graphs.keys()}
+        print(f"Region holdout enabled — initial split: all-train ({len(splits)} WSIs)")
+    else:
+        splits = assign_splits(list(graphs.keys()), seed=config.SPLIT_SEED)
 
     if getattr(config, "BALANCE_WALKS", False):
         all_paths, rw_meta = generate_all_walks_balanced(

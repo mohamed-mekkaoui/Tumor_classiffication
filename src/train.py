@@ -593,3 +593,11 @@ def run(model_name=None, experiment_name=None):
     hist_df = pd.DataFrame(history)
     plot_history(exp_dir, history_df=hist_df)
     plot_test_results(te_y, te_pred, exp_dir, inv_label=inv_label)
+
+    return {
+        "best_val_f1m": best_val_f1m,
+        "test_acc":     te_acc,
+        "test_f1w":     te_f1w,
+        "test_f1m":     te_f1m,
+        "test_bacc":    te_bacc,
+    }
